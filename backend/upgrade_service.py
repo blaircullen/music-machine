@@ -3,6 +3,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 from pathlib import Path
 from dedup import normalize_text
 
@@ -22,9 +23,20 @@ QUALITY_HIGH = "HIGH"                # 320kbps AAC
 DEFAULT_HEADERS = {"User-Agent": "plex-dedup/1.0"}
 
 
+def _collapse_spaced_name(text: str) -> str:
+    """Collapse stylized spaced-out names like 'A R I Z O N A' → 'ARIZONA'."""
+    text = re.sub(r"\s+", " ", text).strip()
+    # If the text is single chars separated by spaces (e.g. "A R I Z O N A"),
+    # collapse them into one word
+    text = re.sub(r"(?<!\S)((?:\w )+\w)(?!\S)", lambda m: m.group(1).replace(" ", "") if all(len(p) == 1 for p in m.group(1).split(" ")) else m.group(1), text)
+    return text
+
+
 def build_search_query(track: dict) -> str:
     """Build a search query for squid.wtf from track metadata."""
-    return f"{track['artist']} {track['album']}"
+    artist = _collapse_spaced_name(track["artist"])
+    album = _collapse_spaced_name(track["album"])
+    return f"{artist} {album}"
 
 
 def classify_match(track: dict, result: dict) -> str:
@@ -193,7 +205,7 @@ async def find_album_match(artist: str, album: str, rate_limit: float = 3.0) -> 
 
     Returns the parsed album dict with tidal_id if found.
     """
-    query = f"{artist} {album}"
+    query = f"{_collapse_spaced_name(artist)} {_collapse_spaced_name(album)}"
     results = await search_albums(query, rate_limit)
 
     n_artist = normalize_text(artist)
