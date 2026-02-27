@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
+import { motion, AnimatePresence } from 'motion/react'
 import {
   Music2,
   HardDrive,
@@ -12,6 +13,8 @@ import {
   FileAudio,
   FolderSync,
   AlertCircle,
+  CheckCircle2,
+  X,
 } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
 import toast from 'react-hot-toast'
@@ -66,10 +69,10 @@ const INITIAL_SCAN: ScanProgressState = {
 }
 
 const PHASE_LABELS: Record<string, string> = {
-  counting: 'Counting files...',
-  scanning: 'Scanning files...',
-  cleaning: 'Cleaning stale records...',
-  analyzing: 'Analyzing duplicates...',
+  counting: 'Counting files…',
+  scanning: 'Reading audio tags…',
+  cleaning: 'Removing stale records…',
+  analyzing: 'Hunting duplicates…',
   complete: 'Scan complete',
 }
 
@@ -93,9 +96,15 @@ export default function Dashboard() {
   const { stats, loading: statsLoading, refetch } = useStats()
   const { lastMessage, isConnected } = useWebSocket()
   const [scanState, setScanState] = useState<ScanProgressState>(INITIAL_SCAN)
+  const [scanResult, setScanResult] = useState<{ elapsed_s: number } | null>(null)
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const wasRunningRef = useRef(false)
+  const scanResultTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reorgStatus = useReorgStatus()
+
+  useEffect(() => {
+    return () => { if (scanResultTimerRef.current) clearTimeout(scanResultTimerRef.current) }
+  }, [])
 
   // Merge WebSocket scan_progress events into local state
   useEffect(() => {
@@ -131,13 +140,18 @@ export default function Dashboard() {
     return () => { if (pollTimerRef.current) clearInterval(pollTimerRef.current) }
   }, [isConnected])
 
-  // Refresh stats when scan finishes
+  // Refresh stats + show celebration when scan finishes
   useEffect(() => {
     if (wasRunningRef.current && !scanState.running) {
       refetch()
+      if (scanState.phase === 'complete' || scanState.phase === '') {
+        setScanResult({ elapsed_s: scanState.elapsed_s })
+        if (scanResultTimerRef.current) clearTimeout(scanResultTimerRef.current)
+        scanResultTimerRef.current = setTimeout(() => setScanResult(null), 7000)
+      }
     }
     wasRunningRef.current = scanState.running
-  }, [scanState.running, refetch])
+  }, [scanState.running, scanState.phase, scanState.elapsed_s, refetch])
 
   const handleReorg = async () => {
     try {
@@ -226,6 +240,44 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      {/* Scan complete celebration */}
+      <AnimatePresence>
+        {scanResult && !scanState.running && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.98, y: -6 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.98, y: -4 }}
+            transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+            className="rounded-xl bg-[#22c55e]/10 border border-[#22c55e]/30 p-4 shadow-[0_0_24px_rgba(34,197,94,0.08)] flex items-center justify-between"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-[#22c55e]/20 flex items-center justify-center shrink-0">
+                <CheckCircle2 className="w-4 h-4 text-[#4ade80]" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-[#4ade80]">Scan complete</p>
+                <p className="text-xs text-slate-500">
+                  {scanResult.elapsed_s > 0
+                    ? `Finished in ${formatElapsed(scanResult.elapsed_s)}. `
+                    : ''}
+                  {stats && stats.dupes_found > 0
+                    ? `Caught ${stats.dupes_found} duplicate${stats.dupes_found === 1 ? '' : 's'}.`
+                    : stats
+                    ? 'Library looks clean.'
+                    : 'Stats updated below.'}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setScanResult(null)}
+              className="text-slate-600 hover:text-slate-400 p-1 transition-colors rounded"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Stat cards */}
       {statsLoading ? (
@@ -357,8 +409,15 @@ export default function Dashboard() {
 
             {(!stats || (stats.dupes_found === 0 && stats.upgrades_pending === 0)) && (
               <div className="flex items-center gap-2.5 p-3 rounded-lg bg-[#22c55e]/10 border border-[#22c55e]/20">
-                <Sparkles className="w-4 h-4 text-[#4ade80]" />
-                <p className="text-sm text-[#4ade80]">Library looks clean</p>
+                <Sparkles className="w-4 h-4 text-[#4ade80] shrink-0" />
+                <div>
+                  <p className="text-sm text-[#4ade80]">Library looks clean</p>
+                  {stats && stats.total_tracks > 0 && (
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {flacPct}% lossless — no action needed
+                    </p>
+                  )}
+                </div>
               </div>
             )}
 

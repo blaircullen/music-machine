@@ -8,21 +8,21 @@ export function Toaster() {
       position="bottom-right"
       toastOptions={{
         style: {
-          background: '#FFFFFF',
-          color: '#1E293B',
-          border: '1px solid #E2E8F0',
+          background: '#1a1d27',
+          color: '#e2e8f0',
+          border: '1px solid rgba(255,255,255,0.08)',
           borderRadius: '12px',
           fontSize: '14px',
-          fontFamily: 'Outfit, sans-serif',
-          boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
+          fontFamily: 'inherit',
+          boxShadow: '0 8px 32px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.3)',
         },
         success: {
-          iconTheme: { primary: '#10B981', secondary: '#FFFFFF' },
+          iconTheme: { primary: '#22c55e', secondary: '#1a1d27' },
         },
         error: {
-          iconTheme: { primary: '#ef4444', secondary: '#FFFFFF' },
+          iconTheme: { primary: '#ef4444', secondary: '#1a1d27' },
         },
-        duration: 3000,
+        duration: 4000,
       }}
     />
   )

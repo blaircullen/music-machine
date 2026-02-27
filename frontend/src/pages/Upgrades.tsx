@@ -80,12 +80,26 @@ export default function Upgrades() {
     // Phase just ended → refresh queue
     const justFinished = !upgradeStatus.running && prev !== upgradeStatus.phase
     if (justFinished && (upgradeStatus.phase === 'complete' || upgradeStatus.phase === 'failed' || upgradeStatus.phase === 'idle')) {
-      if (prev === 'searching') toast.success('Search complete')
+      if (prev === 'searching') {
+        const n = upgradeStatus.found
+        if (n === 0) {
+          toast.success('Search complete — nothing to upgrade right now')
+        } else {
+          toast.success(`Found ${n} potential upgrade${n === 1 ? '' : 's'}`)
+        }
+      }
       if (prev === 'downloading') {
-        const msg = upgradeStatus.failed > 0
-          ? `Downloads done — ${upgradeStatus.completed} completed, ${upgradeStatus.failed} failed`
-          : `Downloaded ${upgradeStatus.completed} tracks`
-        toast.success(msg)
+        const n = upgradeStatus.completed
+        const f = upgradeStatus.failed
+        if (n === 0 && f > 0) {
+          toast.error(`All ${f} download${f === 1 ? '' : 's'} failed — check Job Log`)
+        } else if (f > 0) {
+          toast.success(`${n} upgraded to FLAC, ${f} failed`)
+        } else if (n === 1) {
+          toast.success('One track upgraded to lossless')
+        } else {
+          toast.success(`${n} tracks upgraded to lossless`)
+        }
       }
       setDownloadRequested(false)
       setSearchRequested(false)
