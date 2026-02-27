@@ -1,36 +1,75 @@
-import { motion, AnimatePresence } from 'motion/react'
+import { useEffect, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import type { ReactNode } from 'react'
+import { X } from 'lucide-react'
+import { Button } from './Button'
 
 interface ModalProps {
   open: boolean
   onClose: () => void
-  children: ReactNode
+  title: string
+  message?: string
+  confirmLabel?: string
+  confirmVariant?: 'primary' | 'danger'
+  onConfirm?: () => void | Promise<void>
+  children?: ReactNode
 }
 
-export function Modal({ open, onClose, children }: ModalProps) {
+export function Modal({
+  open,
+  onClose,
+  title,
+  message,
+  confirmLabel = 'Confirm',
+  confirmVariant = 'danger',
+  onConfirm,
+  children,
+}: ModalProps) {
+  // Close on Escape
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [open, onClose])
+
+  if (!open) return null
+
   return createPortal(
-    <AnimatePresence>
-      {open && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="fixed inset-0 z-50 flex items-center justify-center"
-        >
-          <div className="absolute inset-0 bg-slate-900/30 backdrop-blur-sm" onClick={onClose} />
-          <motion.div
-            initial={{ scale: 0.95, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0.95, opacity: 0 }}
-            transition={{ type: 'spring', duration: 0.3 }}
-            className="relative bg-base-800 border border-glass-border rounded-2xl p-6 max-w-md w-full mx-4 shadow-2xl"
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {/* Backdrop */}
+      <div
+        className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+        onClick={onClose}
+      />
+      {/* Panel */}
+      <div className="relative w-full max-w-md rounded-xl bg-[#1a1d27] border border-[#2a2d3a] shadow-2xl p-6">
+        <div className="flex items-start justify-between mb-4">
+          <h3 className="text-base font-semibold text-white">{title}</h3>
+          <button
+            onClick={onClose}
+            className="rounded-md p-1 text-slate-500 hover:text-slate-300 hover:bg-[#2a2d3a] transition-colors"
           >
-            {children}
-          </motion.div>
-        </motion.div>
-      )}
-    </AnimatePresence>,
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {message && <p className="text-sm text-slate-400 mb-6">{message}</p>}
+        {children && <div className="mb-6">{children}</div>}
+
+        {onConfirm && (
+          <div className="flex gap-3 justify-end">
+            <Button variant="secondary" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button variant={confirmVariant} onClick={onConfirm}>
+              {confirmLabel}
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>,
     document.body
   )
 }

@@ -21,15 +21,15 @@ interface QueueItem {
 type FilterTab = 'all' | 'pending' | 'approved' | 'completed' | 'skipped'
 
 const matchVariant = (m: string | null) => {
-  if (m === 'exact') return 'emerald' as const
+  if (m === 'exact') return 'green' as const
   if (m === 'fuzzy') return 'amber' as const
   return 'default' as const
 }
 
 const statusVariant = (s: string) => {
-  const map: Record<string, 'default' | 'blue' | 'amber' | 'emerald' | 'red' | 'lime'> = {
+  const map: Record<string, 'default' | 'blue' | 'amber' | 'green' | 'red' | 'gray'> = {
     pending: 'default', approved: 'blue', downloading: 'amber',
-    completed: 'emerald', failed: 'red', skipped: 'default',
+    completed: 'green', failed: 'red', skipped: 'gray',
   }
   return map[s] ?? 'default'
 }
@@ -203,9 +203,9 @@ export default function Upgrades() {
           <button
             onClick={handleScan}
             disabled={isSearching || isDownloading}
-            className="px-4 py-2 rounded-xl text-sm font-medium transition-all duration-200 inline-flex items-center gap-2 bg-base-700 text-base-300 hover:bg-base-600 border border-glass-border disabled:opacity-60 disabled:cursor-not-allowed"
+            className="px-4 py-2 rounded-xl text-sm font-medium transition-all duration-300 inline-flex items-center gap-2 bg-base-700/80 text-base-300 hover:bg-base-600 border border-glass-border backdrop-blur-md disabled:opacity-40 disabled:cursor-not-allowed shadow-sm hover:shadow-md"
           >
-            {isSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+            {isSearching ? <Loader2 className="w-4 h-4 animate-spin text-lime" /> : <Search className="w-4 h-4 text-lime" />}
             {isSearching ? 'Searching...' : 'Find Upgrades'}
           </button>
         </div>
@@ -213,28 +213,31 @@ export default function Upgrades() {
 
       {/* Search progress panel */}
       {isSearching && (
-        <GlassCard className="p-5">
+        <GlassCard className="p-5 border-blue-500/20 shadow-[0_0_20px_rgba(59,130,246,0.1)]">
           <ProgressBar
             value={upgradeStatus.progress}
             max={upgradeStatus.total}
-            label="Searching for upgrades..."
-            detail={upgradeStatus.total > 0
-              ? `${upgradeStatus.current || `${upgradeStatus.progress}/${upgradeStatus.total}`}`
-              : 'Starting...'
+            label={upgradeStatus.total > 0
+              ? `Searching for upgrades... ${upgradeStatus.progress}/${upgradeStatus.total}`
+              : 'Searching for upgrades...'
             }
+            active
           />
         </GlassCard>
       )}
 
       {/* Download progress panel */}
       {isDownloading && (
-        <GlassCard className="p-5 border-lime/20">
-          <div className="flex items-center gap-3 mb-3">
-            <div className="p-2 rounded-xl bg-lime-dim">
+        <GlassCard className="p-5 border-lime/30 shadow-[0_0_20px_rgba(16,185,129,0.15)] relative overflow-hidden">
+          {/* Subtle animated background gradient */}
+          <div className="absolute inset-0 bg-gradient-to-r from-transparent via-lime/5 to-transparent -translate-x-full animate-[shimmer_2s_infinite]" />
+
+          <div className="flex items-center gap-3 mb-3 relative z-10">
+            <div className="p-2 rounded-xl bg-lime-dim border border-lime/20 shadow-[0_0_10px_rgba(16,185,129,0.2)]">
               <Download className="w-4 h-4 text-lime animate-bounce" />
             </div>
             <div>
-              <p className="text-sm font-medium">Downloading FLAC upgrades</p>
+              <p className="text-sm font-medium text-base-300">Downloading FLAC upgrades</p>
               <p className="text-xs text-base-400">
                 {upgradeStatus.total > 0
                   ? `Track ${upgradeStatus.progress} of ${upgradeStatus.total}`
@@ -243,17 +246,16 @@ export default function Upgrades() {
               </p>
             </div>
           </div>
-          <ProgressBar
-            value={upgradeStatus.progress}
-            max={upgradeStatus.total}
-            detail={upgradeStatus.total > 0
-              ? `${Math.round((upgradeStatus.progress / upgradeStatus.total) * 100)}%`
-              : undefined
-            }
-          />
+          <div className="relative z-10">
+            <ProgressBar
+              value={upgradeStatus.progress}
+              max={upgradeStatus.total}
+              active
+            />
+          </div>
           {upgradeStatus.current && (
-            <p className="text-xs text-base-400 mt-2 truncate">
-              Now downloading: {upgradeStatus.current}
+            <p className="text-xs text-base-400 mt-2 truncate relative z-10">
+              <span className="text-lime/80 font-medium">Downloading:</span> {upgradeStatus.current}
             </p>
           )}
         </GlassCard>
@@ -270,15 +272,18 @@ export default function Upgrades() {
           <button
             key={tab.key}
             onClick={() => setFilterTab(tab.key)}
-            className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all duration-200 flex items-center gap-2 ${
-              filterTab === tab.key
-                ? 'bg-lime-dim text-lime border border-lime/20'
-                : 'text-base-400 hover:text-base-300 hover:bg-base-700/50'
-            }`}
+            className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all duration-300 flex items-center gap-2 relative ${filterTab === tab.key
+                ? 'text-lime drop-shadow-[0_0_8px_rgba(16,185,129,0.5)]'
+                : 'text-base-500 hover:text-base-300 hover:bg-base-700/50'
+              }`}
           >
             {tab.label}
             {tab.count > 0 && (
-              <span className="text-xs opacity-60">{tab.count}</span>
+              <span className={`text-xs px-1.5 py-0.5 rounded-md ${filterTab === tab.key ? 'bg-lime/20 text-lime font-bold' : 'bg-base-800/80'}`}>{tab.count}</span>
+            )}
+            {/* Active Indiciator Line */}
+            {filterTab === tab.key && (
+              <motion.div layoutId="activeTabIndicator" className="absolute -bottom-1 left-3 right-3 h-0.5 bg-lime rounded-full shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
             )}
           </button>
         ))}
@@ -317,18 +322,21 @@ export default function Upgrades() {
                       <motion.tr
                         key={item.id}
                         layout
-                        initial={{ opacity: 0 }}
+                        initial={{ opacity: 0, y: 10 }}
                         animate={{
                           opacity: 1,
-                          backgroundColor: justApproved ? 'rgba(16, 185, 129, 0.06)' : 'transparent',
+                          y: 0,
+                          backgroundColor: justApproved ? 'var(--color-lime-dim)' : 'transparent',
                         }}
-                        exit={{ opacity: 0, x: -20 }}
-                        className="border-b border-glass-border/50 hover:bg-base-800/30 transition-colors"
+                        exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.2 } }}
+                        className="border-b border-glass-border/30 hover:bg-white/[0.02] transition-colors duration-200 group"
                       >
-                        <td className="px-4 py-3">{item.artist || '--'}</td>
-                        <td className="px-4 py-3 text-base-400">{item.album || '--'}</td>
-                        <td className="px-4 py-3">{item.title || '--'}</td>
-                        <td className="px-4 py-3 uppercase font-mono text-xs">{item.format} {item.bitrate > 0 ? `${item.bitrate}k` : ''}</td>
+                        <td className="px-4 py-4 text-base-300 font-medium">{item.artist || '--'}</td>
+                        <td className="px-4 py-4 text-base-400 group-hover:text-base-300 transition-colors">{item.album || '--'}</td>
+                        <td className="px-4 py-4 text-base-300">{item.title || '--'}</td>
+                        <td className="px-4 py-4 uppercase font-mono text-xs text-base-500 tracking-wider">
+                          <span className="bg-base-700/80 px-1.5 py-0.5 rounded-md border border-base-600/50 shadow-sm">{item.format} {item.bitrate > 0 ? `${item.bitrate}k` : ''}</span>
+                        </td>
                         <td className="px-4 py-3 text-center">
                           <Badge variant={matchVariant(item.match_type)}>{item.match_type ?? 'pending'}</Badge>
                         </td>

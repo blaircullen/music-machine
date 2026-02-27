@@ -1,37 +1,70 @@
 @import "tailwindcss";
 
 @theme {
-  --color-base-900: #FAFBFD;
-  --color-base-800: #FFFFFF;
-  --color-base-700: #F1F5F9;
-  --color-base-600: #E2E8F0;
-  --color-base-500: #94A3B8;
-  --color-base-400: #64748B;
-  --color-base-300: #1E293B;
-  --color-glass: rgba(255, 255, 255, 1);
-  --color-glass-border: rgba(226, 232, 240, 1);
-  --color-glass-hover: rgba(241, 245, 249, 1);
-  --color-lime: #10B981;
-  --color-lime-dim: rgba(16, 185, 129, 0.10);
-  --color-lime-glow: rgba(16, 185, 129, 0.25);
-  --font-family-display: 'Syne', sans-serif;
-  --font-family-body: 'Outfit', sans-serif;
+  /* Base surfaces */
+  --color-base-bg: #0f1117;
+  --color-base-card: #1a1d27;
+  --color-base-border: #2a2d3a;
+  --color-base-hover: #2a2d3a;
+
+  /* Text */
+  --color-text-primary: #e2e8f0;
+  --color-text-secondary: #94a3b8;
+  --color-text-muted: #64748b;
+
+  /* Accent — purple primary */
+  --color-accent: #6c63ff;
+  --color-accent-dim: rgba(108, 99, 255, 0.15);
+  --color-accent-glow: rgba(108, 99, 255, 0.4);
+  --color-accent-light: #a89fff;
+
+  /* Semantic */
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+  --color-info: #3b82f6;
+
+  /* Legacy tokens kept for any leftover components */
+  --color-lime: #22c55e;
+  --color-lime-dim: rgba(34, 197, 94, 0.15);
+  --color-base-900: #0f1117;
+  --color-base-800: #1a1d27;
+  --color-base-700: #222535;
+  --color-base-600: #2a2d3a;
+  --color-base-500: #64748b;
+  --color-base-400: #94a3b8;
+  --color-base-300: #e2e8f0;
+  --color-glass: rgba(26, 29, 39, 0.8);
+  --color-glass-border: rgba(255, 255, 255, 0.07);
+  --color-glass-hover: rgba(255, 255, 255, 0.04);
 }
 
+/* ── Global base ──────────────────────────────────────────────────────────── */
+
 body {
-  font-family: var(--font-family-body);
-  background: var(--color-base-900);
-  color: var(--color-base-300);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: #0f1117;
+  color: #e2e8f0;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
   min-height: 100vh;
 }
+
+/* ── Subtle background gradient ──────────────────────────────────────────── */
 
 body::before {
   content: '';
   position: fixed;
   inset: 0;
   background:
-    radial-gradient(ellipse at 20% 50%, rgba(16, 185, 129, 0.04) 0%, transparent 50%),
-    radial-gradient(ellipse at 80% 20%, rgba(16, 185, 129, 0.03) 0%, transparent 50%);
+    radial-gradient(circle at 20% 60%, rgba(108, 99, 255, 0.06) 0%, transparent 45%),
+    radial-gradient(circle at 80% 20%, rgba(34, 197, 94, 0.04) 0%, transparent 45%),
+    radial-gradient(circle at 50% 90%, rgba(59, 130, 246, 0.04) 0%, transparent 50%);
   pointer-events: none;
   z-index: 0;
 }
@@ -41,13 +74,52 @@ body::before {
   z-index: 1;
 }
 
+/* ── Progress bar animations ─────────────────────────────────────────────── */
+
+@keyframes progressSlide {
+  0%   { transform: translateX(-150%); }
+  100% { transform: translateX(450%); }
+}
+
+@keyframes shimmerBar {
+  0%   { background-position: 200% center; }
+  100% { background-position: -200% center; }
+}
+
+/* ── Skeleton shimmer ────────────────────────────────────────────────────── */
+
 @keyframes shimmer {
-  0% { background-position: -200% 0; }
+  0%   { background-position: -200% 0; }
   100% { background-position: 200% 0; }
 }
 
 .skeleton-shimmer {
-  background: linear-gradient(90deg, #E2E8F0 25%, #F1F5F9 50%, #E2E8F0 75%);
+  background: linear-gradient(
+    90deg,
+    #1a1d27 25%,
+    #2a2d3a 50%,
+    #1a1d27 75%
+  );
   background-size: 200% 100%;
   animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2a2d3a;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3a3d4a;
 }

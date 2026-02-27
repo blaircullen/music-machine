@@ -1,0 +1,40 @@
+web:
+  port: 5030
+  url_base: /
+  authentication:
+    disabled: false
+    username: admin
+    password: slskd
+    api_keys:
+      - key: plex-dedup-api-key
+        name: plex-dedup
+        role: Readwrite
+
+soulseek:
+  username: sunygxc_music
+  password: '#1Sh4nn1tyw3b'
+  listen_port: 50300
+  distributed_network:
+    disabled: false
+
+directories:
+  downloads: /downloads
+
+shares:
+  directories: []
+
+filters:
+  search:
+    - '[.]exe$'
+    - '[.]zip$'
+    - '[.]rar$'
+    - '[.]7z$'
+
+global:
+  upload:
+    slots: 1
+  download:
+    slots: 20
+
+logger:
+  log_level: Information

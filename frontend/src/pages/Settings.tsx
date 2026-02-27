@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import { GlassCard, Button, Skeleton, toast } from '../components/ui'
-import { apiPut } from '../lib/api'
 
 interface SettingsData {
   music_path: string
@@ -9,6 +8,16 @@ interface SettingsData {
   squid_rate_limit: string
   auto_resolve_threshold: string
   upgrade_scan_folders: string
+}
+
+async function apiPut<T>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json() as Promise<T>
 }
 
 export default function Settings() {
@@ -21,7 +30,7 @@ export default function Settings() {
 
   useEffect(() => {
     fetch('/api/settings/')
-      .then(r => r.json())
+      .then((r) => r.json())
       .then((data: SettingsData) => {
         setSettings(data)
         setThreshold(data.fingerprint_threshold)
@@ -37,14 +46,18 @@ export default function Settings() {
   }, [])
 
   const handleSave = async () => {
-    const data = await apiPut<SettingsData>('/api/settings/', {
-      fingerprint_threshold: threshold,
-      squid_rate_limit: rateLimit,
-      auto_resolve_threshold: autoResolve,
-      upgrade_scan_folders: upgradeFolders,
-    })
-    setSettings(data)
-    toast.success('Settings saved')
+    try {
+      const data = await apiPut<SettingsData>('/api/settings/', {
+        fingerprint_threshold: threshold,
+        squid_rate_limit: rateLimit,
+        auto_resolve_threshold: autoResolve,
+        upgrade_scan_folders: upgradeFolders,
+      })
+      setSettings(data)
+      toast.success('Settings saved')
+    } catch {
+      toast.error('Failed to save settings')
+    }
   }
 
   if (loading) {
@@ -58,7 +71,7 @@ export default function Settings() {
 
   return (
     <div className="space-y-6 max-w-2xl">
-      <h2 className="text-2xl font-bold font-[family-name:var(--font-family-display)]">Settings</h2>
+      <h2 className="text-2xl font-bold">Settings</h2>
 
       <GlassCard className="p-6 space-y-6">
         <div>
@@ -86,18 +99,14 @@ export default function Settings() {
             max="1.0"
             step="0.01"
             value={threshold}
-            onChange={e => setThreshold(e.target.value)}
-            className="w-full h-2 bg-base-700 rounded-full appearance-none cursor-pointer accent-lime"
+            onChange={(e) => setThreshold(e.target.value)}
+            className="w-full h-2 bg-base-700 rounded-full appearance-none cursor-pointer"
           />
-          <div className="flex justify-between text-xs text-base-500 mt-1">
-            <span>0.50 (loose)</span>
-            <span>1.00 (strict)</span>
-          </div>
         </div>
 
         <div>
           <label htmlFor="rate-limit" className="block text-sm font-medium text-base-400 mb-1.5">
-            Squid.wtf Rate Limit (seconds)
+            Rate Limit (seconds)
           </label>
           <input
             id="rate-limit"
@@ -105,10 +114,9 @@ export default function Settings() {
             min="1"
             step="1"
             value={rateLimit}
-            onChange={e => setRateLimit(e.target.value)}
-            className="w-full px-4 py-2.5 bg-base-800/50 border border-glass-border rounded-xl text-sm text-base-300 focus:outline-none focus:border-lime/50 focus:ring-1 focus:ring-lime/20 transition-all"
+            onChange={(e) => setRateLimit(e.target.value)}
+            className="w-full px-4 py-2.5 bg-base-800/50 border border-glass-border rounded-xl text-sm"
           />
-          <p className="text-xs text-base-500 mt-1">Seconds between API requests to squid.wtf</p>
         </div>
 
         <div>
@@ -119,13 +127,10 @@ export default function Settings() {
             id="upgrade-folders"
             type="text"
             value={upgradeFolders}
-            onChange={e => setUpgradeFolders(e.target.value)}
-            placeholder="e.g. /music/mp3s/, /music/iTunes/"
-            className="w-full px-4 py-2.5 bg-base-800/50 border border-glass-border rounded-xl text-sm text-base-300 focus:outline-none focus:border-lime/50 focus:ring-1 focus:ring-lime/20 transition-all"
+            onChange={(e) => setUpgradeFolders(e.target.value)}
+            placeholder="/music/mp3s/, /music/iTunes/"
+            className="w-full px-4 py-2.5 bg-base-800/50 border border-glass-border rounded-xl text-sm"
           />
-          <p className="text-xs text-base-500 mt-1">
-            Comma-separated folder paths to scan for upgrade candidates. Leave empty to scan the entire music library.
-          </p>
         </div>
 
         <div>
@@ -139,26 +144,15 @@ export default function Settings() {
             max="1.0"
             step="0.05"
             value={autoResolve}
-            onChange={e => setAutoResolve(e.target.value)}
-            className="w-full h-2 bg-base-700 rounded-full appearance-none cursor-pointer accent-lime"
+            onChange={(e) => setAutoResolve(e.target.value)}
+            className="w-full h-2 bg-base-700 rounded-full appearance-none cursor-pointer"
           />
-          <div className="flex justify-between text-xs text-base-500 mt-1">
-            <span>Off (0%)</span>
-            <span>100% only</span>
-          </div>
-          <p className="text-xs text-base-500 mt-1">
-            Duplicates at or above this confidence are auto-resolved after scan (keeps highest quality). Set to 0 to disable.
-          </p>
         </div>
 
         <div className="pt-2">
           <Button onClick={handleSave}>Save Settings</Button>
         </div>
       </GlassCard>
-
-      <p className="text-center text-xs text-base-500 font-[family-name:var(--font-family-display)]">
-        ShoopDeDupe v1.0
-      </p>
     </div>
   )
 }

@@ -1,392 +1,575 @@
-from fastapi import APIRouter, BackgroundTasks
-from database import get_db
-from upgrade_service import (
-    build_search_query, find_and_match_track, find_album_match,
-    get_album_tracks, get_download_url, download_flac, QUALITY_HI_RES,
-)
-from dedup import normalize_text
-from file_manager import trash_file
-from scanner import read_track_metadata
-from pathlib import Path
-import os
-import shutil
 import asyncio
 import logging
+import os
+import threading
+import time
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException
+
+from database import get_db
+from file_manager import compute_sha256, import_flac
+from scanner import read_track_metadata
+from ws_manager import manager
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/upgrades", tags=["upgrades"])
 
-upgrade_status = {"running": False, "progress": 0, "total": 0, "current": "", "phase": "idle"}
+LOSSY_FORMATS = {"mp3", "aac", "m4a", "ogg", "wma", "opus"}
+
+# Global upgrade status
+upgrade_search_status = {
+    "running": False,
+    "phase": "idle",
+    "searched": 0,
+    "found": 0,
+    "downloading": 0,
+    "completed": 0,
+    "failed": 0,
+}
+
+_search_lock = threading.Lock()
+_download_lock = threading.Lock()
+_event_loop: asyncio.AbstractEventLoop | None = None
 
 
-def _get_upgrade_folders() -> list[str]:
-    """Get upgrade scan folders from DB settings, defaulting to all of /music."""
-    with get_db() as db:
-        row = db.execute("SELECT value FROM settings WHERE key = 'upgrade_scan_folders'").fetchone()
-    if row and row["value"]:
-        folders = [f.strip() for f in row["value"].split(",") if f.strip()]
-        if folders:
-            return folders
+def set_event_loop(loop: asyncio.AbstractEventLoop):
+    global _event_loop
+    _event_loop = loop
+
+
+def _broadcast_sync(msg_type: str, data: dict):
+    loop = _event_loop
+    if loop is None or not loop.is_running():
+        return
+    try:
+        asyncio.run_coroutine_threadsafe(manager.broadcast(msg_type, data), loop)
+    except Exception as e:
+        logger.debug(f"Broadcast error: {e}")
+
+
+def _get_setting(key: str, default: str) -> str:
+    try:
+        with get_db() as db:
+            row = db.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+    except Exception:
+        return default
+
+
+def _run_upgrade_search_worker():
+    """
+    Background thread: search slskd for FLAC upgrades of all pending lossy tracks.
+    """
+    if not _search_lock.acquire(blocking=False):
+        logger.warning("Upgrade search already running")
+        return
+
+    job_id = None
+    try:
+        with get_db() as db:
+            cursor = db.execute(
+                "INSERT INTO jobs (job_type, status) VALUES ('upgrade_search', 'running')"
+            )
+            job_id = cursor.lastrowid
+    except Exception as e:
+        logger.error(f"Failed to create upgrade_search job: {e}")
+
+    timeout_s = int(_get_setting("slskd_search_timeout_s", "20"))
+    scan_limit = int(_get_setting("upgrade_scan_limit", "0"))
+
+    upgrade_search_status.update({
+        "running": True,
+        "phase": "searching",
+        "searched": 0,
+        "found": 0,
+        "downloading": 0,
+        "completed": 0,
+        "failed": 0,
+    })
+    _broadcast_sync("job_update", dict(upgrade_search_status))
+
+    try:
+        # Find lossy tracks not already in the upgrade queue (pending or better)
+        with get_db() as db:
+            music_path = os.environ.get("MUSIC_PATH", "/music")
+            query = f"""
+                SELECT t.* FROM tracks t
+                WHERE t.format IN ({','.join('?' * len(LOSSY_FORMATS))})
+                AND t.status = 'active'
+                AND t.id NOT IN (
+                    SELECT track_id FROM upgrade_queue
+                    WHERE status NOT IN ('failed', 'skipped')
+                )
+                ORDER BY t.artist, t.album, t.track_number
+            """
+            params = list(LOSSY_FORMATS)
+            if scan_limit > 0:
+                query += f" LIMIT {scan_limit}"
+            candidates = db.execute(query, params).fetchall()
+
+        total = len(candidates)
+        logger.info(f"Upgrade search: {total} lossy tracks to search")
+
+        from upgrade_service import search_for_flac
+
+        for i, track in enumerate(candidates):
+            upgrade_search_status["searched"] = i + 1
+            _broadcast_sync("job_update", dict(upgrade_search_status))
+
+            track_dict = dict(track)
+            artist = track_dict.get("artist") or ""
+            album = track_dict.get("album") or ""
+            title = track_dict.get("title") or ""
+
+            # Ensure there's a queue entry
+            with get_db() as db:
+                existing = db.execute(
+                    "SELECT id FROM upgrade_queue WHERE track_id = ?",
+                    (track_dict["id"],),
+                ).fetchone()
+                if existing:
+                    queue_id = existing["id"]
+                    db.execute(
+                        "UPDATE upgrade_queue SET status = 'searching', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (queue_id,),
+                    )
+                else:
+                    cursor = db.execute(
+                        """INSERT INTO upgrade_queue
+                           (track_id, search_query, status)
+                           VALUES (?, ?, 'searching')""",
+                        (track_dict["id"], f"{artist} {album or title}"),
+                    )
+                    queue_id = cursor.lastrowid
+
+            try:
+                # Run async search in new event loop (we're in a thread)
+                result = asyncio.run(
+                    search_for_flac(
+                        artist=artist,
+                        album=album,
+                        title=title,
+                        timeout_s=timeout_s,
+                    )
+                )
+
+                if result:
+                    upgrade_search_status["found"] += 1
+                    with get_db() as db:
+                        db.execute(
+                            """UPDATE upgrade_queue
+                               SET status = 'found',
+                                   match_quality = ?,
+                                   slskd_search_id = ?,
+                                   slskd_username = ?,
+                                   slskd_filename = ?,
+                                   slskd_file_size = ?,
+                                   updated_at = CURRENT_TIMESTAMP
+                               WHERE id = ?""",
+                            (
+                                result["match_quality"],
+                                result["slskd_search_id"],
+                                result["username"],
+                                result["filename"],
+                                result["file_size"],
+                                queue_id,
+                            ),
+                        )
+                else:
+                    with get_db() as db:
+                        db.execute(
+                            """UPDATE upgrade_queue
+                               SET status = 'skipped',
+                                   updated_at = CURRENT_TIMESTAMP
+                               WHERE id = ?""",
+                            (queue_id,),
+                        )
+
+            except Exception as e:
+                logger.error(f"Search error for track {track_dict['id']} ({artist} - {title}): {e}")
+                upgrade_search_status["failed"] += 1
+                with get_db() as db:
+                    db.execute(
+                        """UPDATE upgrade_queue
+                           SET status = 'failed',
+                               error_msg = ?,
+                               updated_at = CURRENT_TIMESTAMP
+                           WHERE id = ?""",
+                        (str(e), queue_id),
+                    )
+
+        if job_id:
+            with get_db() as db:
+                db.execute(
+                    "UPDATE jobs SET status = 'completed', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (job_id,),
+                )
+
+        upgrade_search_status["phase"] = "complete"
+        _broadcast_sync("job_update", dict(upgrade_search_status))
+
+    except Exception as e:
+        logger.error(f"Upgrade search worker failed: {e}", exc_info=True)
+        upgrade_search_status["phase"] = "failed"
+        if job_id:
+            try:
+                with get_db() as db:
+                    db.execute(
+                        "UPDATE jobs SET status = 'failed', error_msg = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (str(e), job_id),
+                    )
+            except Exception:
+                pass
+    finally:
+        upgrade_search_status["running"] = False
+        _search_lock.release()
+        _broadcast_sync("job_update", dict(upgrade_search_status))
+
+
+def _run_download_worker():
+    """
+    Background thread: download approved slskd items, verify, import to library.
+    """
+    if not _download_lock.acquire(blocking=False):
+        logger.warning("Download worker already running")
+        return
+
+    job_id = None
+    try:
+        with get_db() as db:
+            cursor = db.execute(
+                "INSERT INTO jobs (job_type, status) VALUES ('upgrade_download', 'running')"
+            )
+            job_id = cursor.lastrowid
+    except Exception as e:
+        logger.error(f"Failed to create upgrade_download job: {e}")
+
+    staging_root = Path(os.environ.get("STAGING_PATH", "/staging"))
     music_path = os.environ.get("MUSIC_PATH", "/music")
-    return [music_path + "/"]
+    trash_path = os.environ.get("TRASH_PATH", "/trash")
+
+    upgrade_search_status.update({
+        "running": True,
+        "phase": "downloading",
+        "downloading": 0,
+        "completed": 0,
+        "failed": 0,
+    })
+    _broadcast_sync("job_update", dict(upgrade_search_status))
+
+    try:
+        with get_db() as db:
+            approved = db.execute(
+                """SELECT uq.*, t.file_path, t.artist, t.album, t.title,
+                          t.track_number, t.disc_number
+                   FROM upgrade_queue uq
+                   JOIN tracks t ON uq.track_id = t.id
+                   WHERE uq.status = 'approved'
+                     AND uq.slskd_username IS NOT NULL
+                     AND uq.slskd_filename IS NOT NULL"""
+            ).fetchall()
+
+        total = len(approved)
+        logger.info(f"Download worker: {total} approved items")
+
+        from upgrade_service import download_file, fetch_completed_file, get_download_status, cancel_download
+
+        for item in approved:
+            item_dict = dict(item)
+            queue_id = item_dict["id"]
+            username = item_dict["slskd_username"]
+            filename = item_dict["slskd_filename"]
+            file_size = item_dict.get("slskd_file_size")
+            original_path = item_dict["file_path"]
+
+            upgrade_search_status["downloading"] += 1
+            _broadcast_sync("job_update", dict(upgrade_search_status))
+
+            with get_db() as db:
+                db.execute(
+                    "UPDATE upgrade_queue SET status = 'downloading', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (queue_id,),
+                )
+
+            try:
+                # Initiate download via slskd
+                started = asyncio.run(download_file(username, filename, file_size))
+                if not started:
+                    raise RuntimeError(f"slskd download initiation failed for {username}/{filename}")
+
+                # Poll until complete or failed
+                poll_timeout = 600  # 10 minutes
+                poll_interval = 5
+                elapsed = 0
+                local_filename = None
+
+                while elapsed < poll_timeout:
+                    time.sleep(poll_interval)
+                    elapsed += poll_interval
+
+                    status = asyncio.run(get_download_status(username, filename))
+                    if status is None:
+                        continue
+
+                    state = status.get("state", "")
+                    if state.startswith("Completed"):
+                        if "Succeeded" in state or state == "Completed":
+                            local_filename = status.get("local_filename")
+                            break
+                        else:
+                            raise RuntimeError(f"slskd download {state}: {username}/{filename}")
+                    elif "Failed" in state or "Cancelled" in state:
+                        raise RuntimeError(f"slskd download {state}: {username}/{filename}")
+
+                if not local_filename:
+                    raise RuntimeError(f"Download timed out or no local path: {username}/{filename}")
+
+                # SCP completed file from BuyVM to local /staging
+                staging_file = fetch_completed_file(local_filename, str(staging_root))
+                staging_path = Path(staging_file)
+
+                if not staging_path.exists():
+                    raise FileNotFoundError(f"Staging file not found after SCP: {staging_path}")
+
+                # Compute SHA-256 of the downloaded file
+                sha256_new = compute_sha256(str(staging_path))
+
+                # Import: verify + move to library
+                new_library_path = import_flac(str(staging_path), original_path, music_path)
+
+                # Read metadata from the newly placed FLAC
+                new_meta = read_track_metadata(new_library_path)
+
+                # Database updates
+                from file_manager import trash_file as do_trash_file
+
+                # Trash the original lossy file (if still exists)
+                if Path(original_path).exists():
+                    trash_dest = do_trash_file(original_path, trash_path, music_path)
+                    with get_db() as db:
+                        db.execute(
+                            """INSERT INTO file_transactions
+                               (track_id, action, source_path, dest_path, state, sha256_after)
+                               VALUES (?, 'upgrade', ?, ?, 'committed', ?)""",
+                            (item_dict["track_id"], original_path, trash_dest, sha256_new),
+                        )
+
+                with get_db() as db:
+                    # Mark original as upgraded
+                    db.execute(
+                        "UPDATE tracks SET status = 'upgraded' WHERE id = ?",
+                        (item_dict["track_id"],),
+                    )
+
+                    # Insert new FLAC track
+                    db.execute(
+                        """INSERT INTO tracks
+                           (file_path, file_size, format, bitrate, bit_depth, sample_rate,
+                            duration, artist, album_artist, album, title, track_number,
+                            disc_number, status, scanned_at)
+                           VALUES (?, ?, 'flac', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP)""",
+                        (
+                            new_library_path,
+                            new_meta.get("file_size"),
+                            new_meta.get("bitrate"),
+                            new_meta.get("bit_depth"),
+                            new_meta.get("sample_rate"),
+                            new_meta.get("duration"),
+                            new_meta.get("artist") or item_dict.get("artist", ""),
+                            new_meta.get("album_artist", ""),
+                            new_meta.get("album") or item_dict.get("album", ""),
+                            new_meta.get("title") or item_dict.get("title", ""),
+                            new_meta.get("track_number") or item_dict.get("track_number"),
+                            new_meta.get("disc_number") or item_dict.get("disc_number"),
+                        ),
+                    )
+
+                    # Mark queue item complete
+                    db.execute(
+                        """UPDATE upgrade_queue
+                           SET status = 'completed',
+                               staging_path = ?,
+                               sha256_new = ?,
+                               updated_at = CURRENT_TIMESTAMP
+                           WHERE id = ?""",
+                        (new_library_path, sha256_new, queue_id),
+                    )
+
+                upgrade_search_status["completed"] += 1
+                logger.info(
+                    f"Upgraded: {item_dict.get('artist')} - {item_dict.get('title')} -> {new_library_path}"
+                )
+
+            except Exception as e:
+                logger.error(
+                    f"Download failed for queue item {queue_id} "
+                    f"({item_dict.get('artist')} - {item_dict.get('title')}): {e}"
+                )
+                upgrade_search_status["failed"] += 1
+                with get_db() as db:
+                    db.execute(
+                        """UPDATE upgrade_queue
+                           SET status = 'failed',
+                               error_msg = ?,
+                               updated_at = CURRENT_TIMESTAMP
+                           WHERE id = ?""",
+                        (str(e), queue_id),
+                    )
+
+        if job_id:
+            with get_db() as db:
+                db.execute(
+                    "UPDATE jobs SET status = 'completed', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (job_id,),
+                )
+
+        upgrade_search_status["phase"] = "complete"
+        _broadcast_sync("job_update", dict(upgrade_search_status))
+        _broadcast_sync("stats_update", {"event": "download_complete"})
+
+    except Exception as e:
+        logger.error(f"Download worker failed: {e}", exc_info=True)
+        upgrade_search_status["phase"] = "failed"
+        if job_id:
+            try:
+                with get_db() as db:
+                    db.execute(
+                        "UPDATE jobs SET status = 'failed', error_msg = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (str(e), job_id),
+                    )
+            except Exception:
+                pass
+    finally:
+        upgrade_search_status["running"] = False
+        _download_lock.release()
+        _broadcast_sync("job_update", dict(upgrade_search_status))
 
 
-@router.get("/candidates")
-def get_upgrade_candidates():
-    """Find lossy tracks that could be upgraded to FLAC."""
-    folders = _get_upgrade_folders()
-    path_filters = " OR ".join(["t.file_path LIKE ?" for _ in folders])
-    path_params = [f"{folder}%" for folder in folders]
+@router.get("")
+@router.get("/")
+def list_upgrades():
+    """Return all upgrade queue items with track metadata."""
     with get_db() as db:
-        candidates = db.execute(f"""
-            SELECT t.* FROM tracks t
-            WHERE t.format IN ('mp3', 'aac', 'ogg', 'm4a')
-            AND t.status = 'active'
-            AND ({path_filters})
-            AND t.id NOT IN (
-                SELECT dgm.track_id FROM dupe_group_members dgm
-                JOIN dupe_groups dg ON dgm.group_id = dg.id
-                WHERE dg.resolved = 1
-            )
-            ORDER BY t.artist, t.album, t.track_number
-        """, path_params).fetchall()
-    return [dict(c) for c in candidates]
+        rows = db.execute(
+            """SELECT uq.id, uq.track_id, uq.status, uq.match_quality,
+                      uq.staging_path, uq.created_at, uq.updated_at, uq.error_msg,
+                      t.artist, t.album, t.title, t.format, t.bitrate
+               FROM upgrade_queue uq
+               JOIN tracks t ON uq.track_id = t.id
+               ORDER BY uq.created_at DESC"""
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
-def queue_upgrade_candidates() -> int:
-    """Queue lossy tracks for upgrade search. Returns count of newly queued candidates."""
-    folders = _get_upgrade_folders()
+@router.post("/search")
+def start_upgrade_search():
+    """Start a background slskd search for FLAC upgrades of all lossy tracks."""
+    if upgrade_search_status["running"]:
+        return {"ok": False, "error": "Upgrade search already in progress"}
 
-    with get_db() as db:
-        # Remove any queue items outside allowed folders (cleanup from before filtering)
-        path_conditions = " AND ".join([f"t.file_path NOT LIKE '{f}%'" for f in folders])
-        db.execute(f"""
-            DELETE FROM upgrade_queue WHERE track_id IN (
-                SELECT t.id FROM tracks t WHERE {path_conditions}
-            )
-        """)
-
-        # Reset failed/skipped items so they get retried
-        db.execute("""
-            UPDATE upgrade_queue
-            SET status = 'pending', match_type = NULL, squid_url = NULL
-            WHERE status IN ('failed', 'skipped')
-        """)
-
-        path_filters = " OR ".join(["file_path LIKE ?" for _ in folders])
-        path_params = [f"{folder}%" for folder in folders]
-        candidates = db.execute(f"""
-            SELECT * FROM tracks
-            WHERE format IN ('mp3', 'aac', 'ogg', 'm4a')
-            AND status = 'active'
-            AND ({path_filters})
-            AND id NOT IN (SELECT track_id FROM upgrade_queue)
-        """, path_params).fetchall()
-
-        for c in candidates:
-            query = build_search_query(dict(c))
-            db.execute(
-                "INSERT INTO upgrade_queue (track_id, search_query, status) VALUES (?, ?, 'pending')",
-                (c["id"], query)
-            )
-
-    return len(candidates)
-
-
-@router.post("/scan")
-async def scan_for_upgrades(background_tasks: BackgroundTasks):
-    """Search squid.wtf for FLAC upgrades of all lossy candidates."""
-    if upgrade_status["running"]:
-        return {"error": "Upgrade scan already in progress"}
-
-    queued = queue_upgrade_candidates()
-    background_tasks.add_task(run_upgrade_search)
-    return {"queued": queued}
+    t = threading.Thread(target=_run_upgrade_search_worker, daemon=True)
+    t.start()
+    return {"ok": True}
 
 
 @router.get("/status")
 def get_upgrade_status():
-    return upgrade_status
-
-
-@router.get("/queue")
-def get_queue(status: str = None):
+    """Return aggregate upgrade status counts."""
     with get_db() as db:
-        if status:
-            items = db.execute("""
-                SELECT uq.*, t.artist, t.title, t.album, t.format, t.bitrate
-                FROM upgrade_queue uq
-                JOIN tracks t ON uq.track_id = t.id
-                WHERE uq.status = ?
-                ORDER BY uq.created_at DESC
-            """, (status,)).fetchall()
-        else:
-            items = db.execute("""
-                SELECT uq.*, t.artist, t.title, t.album, t.format, t.bitrate
-                FROM upgrade_queue uq
-                JOIN tracks t ON uq.track_id = t.id
-                ORDER BY uq.created_at DESC
-            """).fetchall()
-    return [dict(i) for i in items]
+        counts = db.execute(
+            """SELECT
+               COUNT(*) FILTER (WHERE status = 'searching') as searching,
+               COUNT(*) FILTER (WHERE status = 'found') as found,
+               COUNT(*) FILTER (WHERE status = 'downloading') as downloading,
+               COUNT(*) FILTER (WHERE status = 'completed') as completed,
+               COUNT(*) FILTER (WHERE status = 'failed') as failed
+               FROM upgrade_queue"""
+        ).fetchone()
+
+    return {
+        "running": upgrade_search_status["running"],
+        "phase": upgrade_search_status["phase"],
+        "searched": upgrade_search_status["searched"],
+        "found": dict(counts)["found"] if counts else 0,
+        "downloading": dict(counts)["downloading"] if counts else 0,
+        "completed": dict(counts)["completed"] if counts else 0,
+        "failed": dict(counts)["failed"] if counts else 0,
+    }
 
 
-@router.post("/queue/{item_id}/approve")
+@router.post("/{item_id}/approve")
 def approve_upgrade(item_id: int):
+    """Mark an upgrade queue item as approved for download."""
     with get_db() as db:
         row = db.execute(
-            "SELECT squid_url FROM upgrade_queue WHERE id = ?", (item_id,)
+            "SELECT id, status, slskd_username, slskd_filename FROM upgrade_queue WHERE id = ?",
+            (item_id,),
         ).fetchone()
-        if not row:
-            return {"error": "Item not found"}
-        if not row["squid_url"] or row["squid_url"] == "None":
-            return {"error": "Cannot approve: no download URL found. Run search first."}
-        db.execute("UPDATE upgrade_queue SET status = 'approved' WHERE id = ?", (item_id,))
-    return {"status": "approved"}
 
+    if not row:
+        raise HTTPException(status_code=404, detail="Upgrade item not found")
 
-@router.post("/queue/{item_id}/skip")
-def skip_upgrade(item_id: int):
+    if not row["slskd_username"] or not row["slskd_filename"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot approve: no slskd download info. Run search first.",
+        )
+
     with get_db() as db:
-        db.execute("UPDATE upgrade_queue SET status = 'skipped' WHERE id = ?", (item_id,))
-    return {"status": "skipped"}
+        db.execute(
+            "UPDATE upgrade_queue SET status = 'approved', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (item_id,),
+        )
+
+    return {"ok": True, "status": "approved"}
 
 
-@router.post("/approve-all-exact")
-def approve_all_exact():
-    """Approve all queued items with exact matches that have valid download URLs."""
+@router.post("/approve-all")
+def approve_all_upgrades():
+    """Approve all upgrade items with status='found'."""
     with get_db() as db:
         result = db.execute(
-            "UPDATE upgrade_queue SET status = 'approved' "
-            "WHERE match_type = 'exact' AND status = 'pending' "
-            "AND squid_url IS NOT NULL AND squid_url != 'None'"
+            """UPDATE upgrade_queue
+               SET status = 'approved', updated_at = CURRENT_TIMESTAMP
+               WHERE status = 'found'
+                 AND slskd_username IS NOT NULL
+                 AND slskd_filename IS NOT NULL"""
         )
-        count = result.rowcount
-    return {"approved": count}
+    return {"ok": True, "approved": result.rowcount}
 
 
-@router.post("/download-approved")
-async def download_approved(background_tasks: BackgroundTasks):
-    """Start downloading all approved upgrades."""
-    if upgrade_status["running"]:
-        return {"error": "Upgrade already in progress"}
+@router.post("/download")
+def start_download():
+    """Start downloading all approved upgrade items."""
+    if upgrade_search_status["running"]:
+        return {"ok": False, "error": "A job is already running"}
 
     with get_db() as db:
-        count = db.execute("""
-            SELECT COUNT(*) FROM upgrade_queue
-            WHERE status = 'approved'
-              AND squid_url IS NOT NULL
-              AND squid_url != 'None'
-        """).fetchone()[0]
+        count = db.execute(
+            "SELECT COUNT(*) FROM upgrade_queue WHERE status = 'approved'"
+        ).fetchone()[0]
 
     if count == 0:
-        return {"error": "No approved items with valid download URLs", "count": 0}
+        return {"ok": False, "error": "No approved items to download"}
 
-    background_tasks.add_task(run_downloads)
-    return {"status": "started", "count": count}
-
-
-async def _find_track_with_cache(
-    artist: str, album: str, title: str, track_number: int,
-    album_cache: dict[tuple[str, str], dict | None], rate_limit: float = 3.0,
-) -> dict | None:
-    """Find a track on Tidal, caching album lookups to avoid redundant API calls."""
-    cache_key = (normalize_text(artist), normalize_text(album))
-
-    if cache_key not in album_cache:
-        album_match = await find_album_match(artist, album, rate_limit)
-        album_cache[cache_key] = album_match
-
-    album_match = album_cache[cache_key]
-    if not album_match:
-        return None
-
-    tracks = await get_album_tracks(album_match["tidal_id"], rate_limit)
-    n_title = normalize_text(title)
-
-    # Try track number + title match first
-    if track_number > 0:
-        for t in tracks:
-            if t["track_number"] == track_number and normalize_text(t["title"]) == n_title:
-                return {**t, "match_type": "exact", "album_tidal_id": album_match["tidal_id"]}
-
-    # Exact title match
-    for t in tracks:
-        if normalize_text(t["title"]) == n_title:
-            return {**t, "match_type": "exact", "album_tidal_id": album_match["tidal_id"]}
-
-    # Fuzzy title match
-    for t in tracks:
-        t_title = normalize_text(t["title"])
-        if n_title in t_title or t_title in n_title:
-            return {**t, "match_type": "fuzzy", "album_tidal_id": album_match["tidal_id"]}
-
-    return None
+    t = threading.Thread(target=_run_download_worker, daemon=True)
+    t.start()
+    return {"ok": True, "count": count}
 
 
-def run_upgrade_search():
-    """Background task: search squid.wtf for each pending queue item."""
-    upgrade_status["running"] = True
-    upgrade_status["phase"] = "searching"
+@router.post("/{item_id}/skip")
+def skip_upgrade(item_id: int):
+    """Skip an upgrade queue item."""
+    with get_db() as db:
+        row = db.execute("SELECT id FROM upgrade_queue WHERE id = ?", (item_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Upgrade item not found")
 
     with get_db() as db:
-        pending = db.execute(
-            "SELECT uq.*, t.artist, t.title, t.album, t.track_number "
-            "FROM upgrade_queue uq JOIN tracks t ON uq.track_id = t.id "
-            "WHERE uq.status = 'pending'"
-        ).fetchall()
-
-    upgrade_status["total"] = len(pending)
-
-    # Cache album search results to avoid redundant API calls
-    album_cache: dict[tuple[str, str], dict | None] = {}
-
-    try:
-        for i, item in enumerate(pending):
-            upgrade_status["progress"] = i + 1
-            upgrade_status["current"] = f"{item['artist']} - {item['title']}"
-
-            try:
-                match = asyncio.run(_find_track_with_cache(
-                    artist=item["artist"],
-                    album=item["album"],
-                    title=item["title"],
-                    track_number=item["track_number"],
-                    album_cache=album_cache,
-                    rate_limit=3.0,
-                ))
-
-                with get_db() as db:
-                    if match and match.get("tidal_id") is not None:
-                        db.execute("""
-                            UPDATE upgrade_queue
-                            SET match_type = ?, squid_url = ?, status = ?
-                            WHERE id = ?
-                        """, (
-                            match["match_type"],
-                            str(match["tidal_id"]),
-                            "pending",  # stays pending until approved
-                            item["id"],
-                        ))
-                    else:
-                        db.execute(
-                            "UPDATE upgrade_queue SET match_type = 'none', status = 'skipped' WHERE id = ?",
-                            (item["id"],)
-                        )
-            except Exception as e:
-                logger.error(f"Error searching for {item['artist']} - {item['title']}: {e}")
-                with get_db() as db:
-                    db.execute(
-                        "UPDATE upgrade_queue SET status = 'failed' WHERE id = ?",
-                        (item["id"],)
-                    )
-    finally:
-        upgrade_status["running"] = False
-        upgrade_status["phase"] = "idle"
-
-
-def run_downloads():
-    """Background task: download FLACs for all approved queue items."""
-    staging = Path(os.environ.get("STAGING_PATH", "/staging"))
-    trash_dir = Path(os.environ.get("TRASH_PATH", "/trash"))
-    music_root = Path(os.environ.get("MUSIC_PATH", "/music"))
-
-    with get_db() as db:
-        approved = db.execute("""
-            SELECT uq.*, t.file_path, t.artist, t.title, t.album, t.track_number
-            FROM upgrade_queue uq
-            JOIN tracks t ON uq.track_id = t.id
-            WHERE uq.status = 'approved'
-              AND uq.squid_url IS NOT NULL
-              AND uq.squid_url != 'None'
-        """).fetchall()
-
-    upgrade_status["running"] = True
-    upgrade_status["phase"] = "downloading"
-    upgrade_status["total"] = len(approved)
-    upgrade_status["progress"] = 0
-    upgrade_status["current"] = ""
-
-    try:
-        for i, item in enumerate(approved):
-            upgrade_status["progress"] = i + 1
-            upgrade_status["current"] = f"{item['artist']} - {item['title']}"
-
-            with get_db() as db:
-                db.execute("UPDATE upgrade_queue SET status = 'downloading' WHERE id = ?", (item["id"],))
-
-            try:
-                tidal_track_id = int(item["squid_url"])
-                # Get download URL (try hi-res first, falls back to lossless)
-                dl_info = asyncio.run(get_download_url(tidal_track_id, QUALITY_HI_RES, rate_limit=2.0))
-
-                # Download to staging
-                safe_name = f"{item['artist']} - {item['title']}.flac".replace("/", "_")
-                staging_path = staging / safe_name
-                asyncio.run(download_flac(dl_info["url"], staging_path, rate_limit=1.0))
-
-                # Verify the download by reading its metadata
-                new_meta = read_track_metadata(staging_path)
-                if new_meta["format"] != "flac" or new_meta["file_size"] < 1000:
-                    raise ValueError("Downloaded file is not a valid FLAC")
-
-                # Move FLAC to final location (same dir as original, new extension)
-                original_path = Path(item["file_path"])
-                flac_dest = original_path.with_suffix(".flac")
-                flac_dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(staging_path), str(flac_dest))
-
-                # Move original lossy file to trash (after FLAC is safely in place)
-                dest = trash_file(original_path, trash_dir, music_root)
-
-                # Update database
-                with get_db() as db:
-                    # Mark original as upgraded
-                    db.execute("UPDATE tracks SET status = 'upgraded' WHERE id = ?", (item["track_id"],))
-
-                    # Log the file action
-                    db.execute(
-                        "INSERT INTO file_actions (track_id, action, source_path, dest_path) VALUES (?, 'trash', ?, ?)",
-                        (item["track_id"], item["file_path"], dest)
-                    )
-
-                    # Insert new FLAC track
-                    db.execute("""
-                        INSERT INTO tracks (file_path, file_size, format, bitrate, bit_depth,
-                            sample_rate, duration, artist, album_artist, album, title,
-                            track_number, disc_number, fingerprint, status)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
-                    """, (
-                        str(flac_dest), new_meta["file_size"], "flac",
-                        new_meta.get("bitrate", 0),
-                        dl_info["bit_depth"], dl_info["sample_rate"], new_meta["duration"],
-                        new_meta["artist"] or item["artist"],
-                        new_meta.get("album_artist", ""),
-                        new_meta["album"] or item["album"],
-                        new_meta["title"] or item["title"],
-                        new_meta["track_number"] or item["track_number"],
-                        new_meta.get("disc_number", 1),
-                        new_meta.get("fingerprint", ""),
-                    ))
-
-                    # Mark queue item complete
-                    db.execute(
-                        "UPDATE upgrade_queue SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?",
-                        (item["id"],)
-                    )
-
-                logger.info(f"Upgraded: {item['artist']} - {item['title']} ({dl_info['bit_depth']}bit/{dl_info['sample_rate']}Hz)")
-
-            except Exception as e:
-                logger.error(f"Download failed for {item['artist']} - {item['title']}: {e}")
-                with get_db() as db:
-                    db.execute("UPDATE upgrade_queue SET status = 'failed' WHERE id = ?", (item["id"],))
-
-                # Clean up staging file if it exists
-                staging_path = staging / f"{item['artist']} - {item['title']}.flac".replace("/", "_")
-                if staging_path.exists():
-                    staging_path.unlink()
-    finally:
-        upgrade_status["running"] = False
-        upgrade_status["phase"] = "idle"
-        upgrade_status["current"] = ""
+        db.execute(
+            "UPDATE upgrade_queue SET status = 'skipped', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (item_id,),
+        )
+    return {"ok": True, "status": "skipped"}

@@ -8,3 +8,4 @@ dist/
 staging/
 trash/
 .pytest_cache/
+*.log

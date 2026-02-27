@@ -5,9 +5,11 @@ import os
 
 DB_PATH = Path(os.environ.get("DB_PATH", "/data/plex-dedup.db"))
 
+
 def init_db():
     with get_db() as db:
         db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA synchronous=NORMAL")
         db.executescript("""
             CREATE TABLE IF NOT EXISTS tracks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -25,6 +27,7 @@ def init_db():
                 track_number INTEGER,
                 disc_number INTEGER,
                 fingerprint TEXT,
+                sha256 TEXT,
                 scanned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 status TEXT DEFAULT 'active'
             );
@@ -47,20 +50,40 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 track_id INTEGER REFERENCES tracks(id),
                 search_query TEXT,
-                match_type TEXT,
-                squid_url TEXT,
                 status TEXT DEFAULT 'pending',
+                match_quality TEXT,
+                slskd_search_id TEXT,
+                slskd_username TEXT,
+                slskd_filename TEXT,
+                slskd_file_size INTEGER,
+                staging_path TEXT,
+                sha256_original TEXT,
+                sha256_new TEXT,
+                error_msg TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                completed_at TIMESTAMP
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
-            CREATE TABLE IF NOT EXISTS file_actions (
+            CREATE TABLE IF NOT EXISTS file_transactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                track_id INTEGER REFERENCES tracks(id),
+                track_id INTEGER,
                 action TEXT,
                 source_path TEXT,
                 dest_path TEXT,
+                state TEXT DEFAULT 'committed',
+                sha256_before TEXT,
+                sha256_after TEXT,
                 performed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_type TEXT,
+                status TEXT DEFAULT 'running',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                error_msg TEXT,
+                details TEXT
             );
 
             CREATE TABLE IF NOT EXISTS settings (
@@ -72,12 +95,31 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_tracks_status ON tracks(status);
             CREATE INDEX IF NOT EXISTS idx_tracks_format ON tracks(format);
             CREATE INDEX IF NOT EXISTS idx_upgrade_queue_status ON upgrade_queue(status);
+            CREATE INDEX IF NOT EXISTS idx_upgrade_queue_track_id ON upgrade_queue(track_id);
+            CREATE INDEX IF NOT EXISTS idx_file_transactions_track_id ON file_transactions(track_id);
+            CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
         """)
+
+        # Insert default settings if not present
+        defaults = [
+            ("slskd_search_timeout_s", "20"),
+            ("auto_resolve_threshold", "0.0"),
+            ("upgrade_scan_limit", "0"),
+        ]
+        for key, value in defaults:
+            db.execute(
+                "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+                (key, value)
+            )
+
 
 @contextmanager
 def get_db():
-    conn = sqlite3.connect(str(DB_PATH))
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
     try:
         yield conn

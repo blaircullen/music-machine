@@ -197,29 +197,30 @@ export default function Duplicates() {
         </div>
       </div>
 
-      <Modal open={showBulkModal} onClose={() => setShowBulkModal(false)}>
-        <h3 className="text-lg font-semibold font-[family-name:var(--font-family-display)] mb-2">Confirm Bulk Resolve</h3>
-        <p className="text-base-400 text-sm mb-6">
-          This will trash losers across {unresolvedCount} groups, keeping the highest quality version of each.
-        </p>
-        <div className="flex gap-3 justify-end">
-          <Button variant="secondary" onClick={() => setShowBulkModal(false)}>Cancel</Button>
-          <Button variant="danger" onClick={handleResolveAll}>Trash All Losers</Button>
-        </div>
-      </Modal>
+      <Modal
+        open={showBulkModal}
+        onClose={() => setShowBulkModal(false)}
+        title="Confirm Bulk Resolve"
+        message={`This will trash losers across ${unresolvedCount} groups, keeping the highest quality version of each.`}
+        confirmLabel="Trash All Losers"
+        confirmVariant="danger"
+        onConfirm={handleResolveAll}
+      />
 
-      <div className="flex gap-2">
+      <div className="flex gap-2 mb-4">
         {tabs.map(tab => (
           <button
             key={tab.key}
             onClick={() => setFilterTab(tab.key)}
-            className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all duration-200 ${
-              filterTab === tab.key
-                ? 'bg-lime-dim text-lime border border-lime/20'
-                : 'text-base-400 hover:text-base-300 hover:bg-base-700/50'
-            }`}
+            className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all duration-300 relative ${filterTab === tab.key
+                ? 'text-lime drop-shadow-[0_0_8px_rgba(16,185,129,0.5)]'
+                : 'text-base-500 hover:text-base-300 hover:bg-base-700/50'
+              }`}
           >
             {tab.label}
+            {filterTab === tab.key && (
+              <motion.div layoutId="dupTabIndicator" className="absolute -bottom-1 left-3 right-3 h-0.5 bg-lime rounded-full shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
+            )}
           </button>
         ))}
       </div>
@@ -236,22 +237,22 @@ export default function Duplicates() {
         <GlassCard className="overflow-hidden">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-glass-border text-base-400 text-left">
-                <th className="px-4 py-3 font-medium w-8"></th>
-                <th className="px-4 py-3 font-medium cursor-pointer hover:text-base-300 select-none" onClick={() => toggleSort('artist')}>
+              <tr className="border-b border-glass-border/40 text-base-400 text-left bg-base-800/20 backdrop-blur-sm">
+                <th className="px-4 py-4 font-medium w-8"></th>
+                <th className="px-4 py-4 font-medium cursor-pointer hover:text-base-200 select-none transition-colors" onClick={() => toggleSort('artist')}>
                   Artist{sortIndicator('artist')}
                 </th>
-                <th className="px-4 py-3 font-medium">Title</th>
-                <th className="px-4 py-3 font-medium">Album</th>
-                <th className="px-4 py-3 font-medium text-center">Members</th>
-                <th className="px-4 py-3 font-medium cursor-pointer hover:text-base-300 select-none text-center" onClick={() => toggleSort('quality_gap')}>
+                <th className="px-4 py-4 font-medium">Title</th>
+                <th className="px-4 py-4 font-medium">Album</th>
+                <th className="px-4 py-4 font-medium text-center">Members</th>
+                <th className="px-4 py-4 font-medium cursor-pointer hover:text-base-200 select-none text-center transition-colors" onClick={() => toggleSort('quality_gap')}>
                   Quality Gap{sortIndicator('quality_gap')}
                 </th>
-                <th className="px-4 py-3 font-medium text-center">Match</th>
-                <th className="px-4 py-3 font-medium cursor-pointer hover:text-base-300 select-none text-center" onClick={() => toggleSort('confidence')}>
+                <th className="px-4 py-4 font-medium text-center">Match</th>
+                <th className="px-4 py-4 font-medium cursor-pointer hover:text-base-200 select-none text-center transition-colors" onClick={() => toggleSort('confidence')}>
                   Confidence{sortIndicator('confidence')}
                 </th>
-                <th className="px-4 py-3 font-medium text-right">Actions</th>
+                <th className="px-4 py-4 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -297,28 +298,30 @@ function GroupRows({
       <motion.tr
         layout
         exit={{ opacity: 0, height: 0 }}
-        className="border-b border-glass-border/50 hover:bg-base-800/30 cursor-pointer transition-colors"
+        className="border-b border-glass-border/30 hover:bg-white/[0.02] cursor-pointer transition-colors group"
         onClick={onToggle}
       >
-        <td className="px-4 py-3 text-base-500">
+        <td className="px-4 py-4 text-base-500 group-hover:text-lime transition-colors">
           <motion.span animate={{ rotate: isExpanded ? 90 : 0 }} className="inline-block">
-            <ChevronRight className="w-4 h-4" />
+            <ChevronRight className="w-5 h-5 drop-shadow-[0_0_8px_rgba(16,185,129,0.3)]" />
           </motion.span>
         </td>
-        <td className="px-4 py-3">{rep?.artist ?? '-'}</td>
-        <td className="px-4 py-3">{rep?.title ?? '-'}</td>
-        <td className="px-4 py-3 text-base-400">{rep?.album ?? '-'}</td>
-        <td className="px-4 py-3 text-center">{members.length}</td>
-        <td className="px-4 py-3 text-center">
-          <span className={gap > 20 ? 'text-amber-400' : 'text-base-400'}>{gap}</span>
+        <td className="px-4 py-4 text-base-300 font-medium">{rep?.artist ?? '-'}</td>
+        <td className="px-4 py-4 text-base-300">{rep?.title ?? '-'}</td>
+        <td className="px-4 py-4 text-base-400 group-hover:text-base-300 transition-colors">{rep?.album ?? '-'}</td>
+        <td className="px-4 py-4 text-center">
+          <span className="bg-base-700/60 px-2 py-1 rounded-md text-base-300">{members.length}</span>
         </td>
-        <td className="px-4 py-3 text-center">
+        <td className="px-4 py-4 text-center">
+          <span className={gap > 20 ? 'text-amber-400 font-bold drop-shadow-[0_0_8px_rgba(245,158,11,0.4)]' : 'text-base-400'}>{gap}</span>
+        </td>
+        <td className="px-4 py-4 text-center">
           <Badge>{group.match_type}</Badge>
         </td>
-        <td className="px-4 py-3 text-center">
+        <td className="px-4 py-4 text-center text-base-300">
           {group.confidence > 0 ? `${(group.confidence * 100).toFixed(0)}%` : '-'}
         </td>
-        <td className="px-4 py-3 text-right" onClick={e => e.stopPropagation()}>
+        <td className="px-4 py-4 text-right" onClick={e => e.stopPropagation()}>
           {!group.resolved ? (
             <Button
               size="sm"
@@ -329,7 +332,7 @@ function GroupRows({
               Resolve
             </Button>
           ) : (
-            <Badge variant="emerald">Resolved</Badge>
+            <Badge variant="green">Resolved</Badge>
           )}
         </td>
       </motion.tr>
@@ -342,18 +345,18 @@ function GroupRows({
             className="border-b border-glass-border/50"
           >
             <td colSpan={9} className="p-0">
-              <div className="bg-base-700 p-4">
+              <div className="bg-base-800/50 p-4 shadow-inner backdrop-blur-md">
                 <table className="w-full text-xs">
                   <thead>
-                    <tr className="text-base-500 text-left">
-                      <th className="px-3 py-2 font-medium">Status</th>
-                      <th className="px-3 py-2 font-medium">Format</th>
-                      <th className="px-3 py-2 font-medium">Bitrate</th>
-                      <th className="px-3 py-2 font-medium">Bit Depth</th>
-                      <th className="px-3 py-2 font-medium">Sample Rate</th>
-                      <th className="px-3 py-2 font-medium">Size</th>
-                      <th className="px-3 py-2 font-medium">File Path</th>
-                      {!group.resolved && <th className="px-3 py-2 font-medium text-right">Keep</th>}
+                    <tr className="text-base-500 text-left border-b border-base-700/50">
+                      <th className="px-3 py-3 font-medium uppercase tracking-wider">Status</th>
+                      <th className="px-3 py-3 font-medium uppercase tracking-wider">Format</th>
+                      <th className="px-3 py-3 font-medium uppercase tracking-wider">Bitrate</th>
+                      <th className="px-3 py-3 font-medium uppercase tracking-wider">Bit Depth</th>
+                      <th className="px-3 py-3 font-medium uppercase tracking-wider">Sample Rate</th>
+                      <th className="px-3 py-3 font-medium uppercase tracking-wider">Size</th>
+                      <th className="px-3 py-3 font-medium uppercase tracking-wider">File Path</th>
+                      {!group.resolved && <th className="px-3 py-3 font-medium text-right uppercase tracking-wider">Action</th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -362,14 +365,14 @@ function GroupRows({
                       return (
                         <tr
                           key={track.id}
-                          className={isWinner
-                            ? 'border-l-2 border-lime bg-lime/5'
-                            : 'border-l-2 border-red-500/50 bg-red-500/5'
-                          }
+                          className={`border-b border-base-700/30 transition-colors ${isWinner
+                            ? 'bg-lime/5 border-l-2 border-l-lime hover:bg-lime/10'
+                            : 'bg-transparent hover:bg-base-700/30 border-l-2 border-l-transparent'
+                            }`}
                         >
                           <td className="px-3 py-2">
                             {isWinner
-                              ? <Badge variant="lime">KEEP</Badge>
+                              ? <Badge variant="green">KEEP</Badge>
                               : <Badge variant="red">TRASH</Badge>
                             }
                           </td>

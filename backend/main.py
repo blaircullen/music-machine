@@ -1,20 +1,27 @@
-from contextlib import asynccontextmanager
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from pathlib import Path
-from database import init_db
+import asyncio
+import logging
+import os
 import threading
 import time
-import os
-import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from pathlib import Path
 
-logging.basicConfig(level=logging.INFO)
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
+
+from database import init_db
+from ws_manager import manager
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 
 def _scheduled_scan_loop():
-    """Run a full scan (library + upgrades) daily at 1 AM."""
+    """Run a full library scan daily at 1 AM."""
     from routes.scan import run_scan, scan_status
 
     while True:
@@ -23,7 +30,9 @@ def _scheduled_scan_loop():
         if target <= now:
             target += timedelta(days=1)
         wait_seconds = (target - now).total_seconds()
-        logger.info(f"Next scheduled scan at {target.isoformat()}, sleeping {wait_seconds:.0f}s")
+        logger.info(
+            f"Next scheduled scan at {target.isoformat()}, sleeping {wait_seconds:.0f}s"
+        )
         time.sleep(wait_seconds)
 
         if scan_status["running"]:
@@ -31,8 +40,8 @@ def _scheduled_scan_loop():
             continue
 
         logger.info("Starting scheduled scan (1 AM daily)")
+        music_path = Path(os.environ.get("MUSIC_PATH", "/music"))
         try:
-            music_path = Path(os.environ.get("MUSIC_PATH", "/music"))
             run_scan(music_path)
             logger.info("Scheduled scan complete")
         except Exception as e:
@@ -41,27 +50,89 @@ def _scheduled_scan_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Initialize database schema and defaults
     init_db()
-    t = threading.Thread(target=_scheduled_scan_loop, daemon=True)
-    t.start()
+
+    # Clean up orphaned 'running' jobs from previous process (crash/restart)
+    try:
+        from database import get_db
+        with get_db() as db:
+            cur = db.execute(
+                "UPDATE jobs SET status='failed', error_msg='Orphaned: process restarted', "
+                "updated_at=CURRENT_TIMESTAMP WHERE status='running'"
+            )
+            if cur.rowcount:
+                logger.info(f"Cleaned up {cur.rowcount} orphaned running job(s)")
+    except Exception as e:
+        logger.warning(f"Failed to clean up orphaned jobs: {e}")
+
+    # Capture the running event loop for use by background threads
+    loop = asyncio.get_event_loop()
+
+    # Inject event loop reference into route modules that need it
+    from routes import scan as scan_mod, upgrades as upgrades_mod
+    scan_mod.set_event_loop(loop)
+    upgrades_mod.set_event_loop(loop)
+
+    # Start the daily scheduled scan thread
+    scheduler_thread = threading.Thread(
+        target=_scheduled_scan_loop, daemon=True, name="scan-scheduler"
+    )
+    scheduler_thread.start()
+
+    logger.info("plex-dedup backend ready")
     yield
+    logger.info("plex-dedup backend shutting down")
 
-app = FastAPI(title="plex-dedup", version="0.1.0", lifespan=lifespan)
 
-from routes import scan, dupes, trash, stats, settings, upgrades
+app = FastAPI(title="plex-dedup", version="2.0.0", lifespan=lifespan)
+
+# Import and register all routers
+from routes import scan, dupes, upgrades, trash, stats, jobs, settings
 
 app.include_router(scan.router)
 app.include_router(dupes.router)
+app.include_router(upgrades.router)
 app.include_router(trash.router)
 app.include_router(stats.router)
+app.include_router(jobs.router)
 app.include_router(settings.router)
-app.include_router(upgrades.router)
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """
+    WebSocket endpoint. Backend broadcasts JSON messages to all connected clients:
+      {"type": "scan_progress"|"job_update"|"stats_update", "data": {...}}
+
+    Clients can send any message to keep alive (we read and discard).
+    """
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Keep connection alive; client can send pings
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+            except asyncio.TimeoutError:
+                # Send a ping to detect dead connections
+                try:
+                    await websocket.send_text('{"type":"ping"}')
+                except Exception:
+                    break
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.debug(f"WebSocket error: {e}")
+    finally:
+        manager.disconnect(websocket)
+
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "version": "2.0.0"}
 
-# Serve React frontend (added after frontend build)
-frontend_dist = Path("/app/frontend/dist")
-if frontend_dist.exists():
-    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
+
+# Serve React frontend (present after multi-stage Docker build)
+_frontend_dist = Path("/app/frontend/dist")
+if _frontend_dist.exists():
+    app.mount("/", StaticFiles(directory=str(_frontend_dist), html=True), name="frontend")

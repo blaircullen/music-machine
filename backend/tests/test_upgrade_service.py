@@ -1,94 +1,158 @@
+"""
+Tests for the slskd-based upgrade_service module.
+All HTTP calls are mocked via httpx mock transport.
+"""
+import asyncio
+import sys
+
 import pytest
-from upgrade_service import (
-    build_search_query, classify_match,
-    _extract_artist_name, _parse_album_result, _parse_track_result,
-)
+import httpx
+
+import upgrade_service as us
 
 
-def test_build_search_query():
-    track = {"artist": "Radiohead", "album": "OK Computer", "title": "Paranoid Android"}
-    assert build_search_query(track) == "Radiohead OK Computer"
+def run(coro):
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
-def test_classify_exact_match():
-    track = {"artist": "Radiohead", "album": "OK Computer", "title": "Paranoid Android"}
-    result = {"artist": "Radiohead", "album": "OK Computer", "title": "Paranoid Android"}
-    assert classify_match(track, result) == "exact"
+def _patch_client(monkeypatch, routes: dict):
+    """
+    Returns a context that patches httpx.AsyncClient to use a mock transport.
+    routes: dict of {(METHOD, path_prefix): (status_code, json_body)}
+    """
+    class MockTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            for (method, path), (status, body) in routes.items():
+                if request.method == method and request.url.path.startswith(path):
+                    return httpx.Response(status, json=body)
+            return httpx.Response(404, json={"detail": "not found"})
+
+    original_client = httpx.AsyncClient
+
+    class PatchedClient(httpx.AsyncClient):
+        def __init__(self, **kwargs):
+            kwargs.pop("transport", None)
+            super().__init__(transport=MockTransport(), **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
+    return original_client
 
 
-def test_classify_fuzzy_match():
-    track = {"artist": "Radiohead", "album": "OK Computer", "title": "Paranoid Android"}
-    result = {"artist": "Radiohead", "album": "OK Computer (Remaster)", "title": "Paranoid Android"}
-    assert classify_match(track, result) == "fuzzy"
+def test_check_connected_true(monkeypatch):
+    orig = _patch_client(monkeypatch, {("GET", "/api/v0/application"): (200, {"status": "ok"})})
+    assert run(us.check_connected()) is True
+    monkeypatch.setattr(httpx, "AsyncClient", orig)
 
 
-def test_classify_no_match():
-    track = {"artist": "Radiohead", "album": "OK Computer", "title": "Paranoid Android"}
-    result = {"artist": "Coldplay", "album": "Parachutes", "title": "Yellow"}
-    assert classify_match(track, result) == "none"
+def test_check_connected_false(monkeypatch):
+    orig = _patch_client(monkeypatch, {("GET", "/api/v0/application"): (503, {})})
+    assert run(us.check_connected()) is False
+    monkeypatch.setattr(httpx, "AsyncClient", orig)
 
 
-def test_extract_artist_name_dict():
-    assert _extract_artist_name({"name": "Radiohead", "id": 64518}) == "Radiohead"
+def test_download_file_success(monkeypatch):
+    orig = _patch_client(monkeypatch, {("POST", "/api/v0/transfers/downloads/"): (201, {})})
+    result = run(us.download_file("testuser", "/music/Artist/song.flac", 12345678))
+    assert result is True
+    monkeypatch.setattr(httpx, "AsyncClient", orig)
 
 
-def test_extract_artist_name_list():
-    assert _extract_artist_name([{"name": "Radiohead"}, {"name": "Other"}]) == "Radiohead"
+def test_download_file_failure(monkeypatch):
+    orig = _patch_client(monkeypatch, {("POST", "/api/v0/transfers/downloads/"): (400, {"error": "bad"})})
+    result = run(us.download_file("testuser", "/music/Artist/song.flac"))
+    assert result is False
+    monkeypatch.setattr(httpx, "AsyncClient", orig)
 
 
-def test_extract_artist_name_empty():
-    assert _extract_artist_name(None) == ""
-    assert _extract_artist_name([]) == ""
+def test_score_slskd_result_hi_res_marker():
+    entry = {"filename": "/music/Artist/Album [24bit]/song.flac", "size": 90_000_000, "uploadSpeed": 0}
+    score = us._score_slskd_result(entry)
+    assert score >= 1000
 
 
-def test_parse_album_result():
-    raw = {
-        "id": 58990510,
-        "title": "OK Computer",
-        "artists": [{"name": "Radiohead", "id": 64518}],
-        "numberOfTracks": 12,
-        "releaseDate": "1997-06-16",
-        "audioQuality": "LOSSLESS",
-        "cover": "abc123",
-    }
-    parsed = _parse_album_result(raw)
-    assert parsed["tidal_id"] == 58990510
-    assert parsed["title"] == "OK Computer"
-    assert parsed["artist"] == "Radiohead"
-    assert parsed["num_tracks"] == 12
-    assert parsed["audio_quality"] == "LOSSLESS"
+def test_score_slskd_result_no_markers():
+    entry = {"filename": "/music/Artist/Album/song.flac", "size": 5_000_000, "uploadSpeed": 0}
+    score = us._score_slskd_result(entry)
+    assert score == 0
 
 
-def test_parse_track_result():
-    raw = {
-        "id": 58990511,
-        "title": "Airbag",
-        "artists": [{"name": "Radiohead"}],
-        "album": {"title": "OK Computer", "id": 58990510},
-        "trackNumber": 1,
-        "volumeNumber": 1,
-        "duration": 287,
-        "audioQuality": "LOSSLESS",
-        "isrc": "GBAYE9700102",
-    }
-    parsed = _parse_track_result(raw)
-    assert parsed["tidal_id"] == 58990511
-    assert parsed["title"] == "Airbag"
-    assert parsed["artist"] == "Radiohead"
-    assert parsed["album"] == "OK Computer"
-    assert parsed["track_number"] == 1
-    assert parsed["duration"] == 287
+def test_score_slskd_result_large_file_bonus():
+    entry = {"filename": "/music/Artist/Album/song.flac", "size": 60_000_000, "uploadSpeed": 0}
+    score = us._score_slskd_result(entry)
+    assert score >= 100
 
 
-def test_parse_track_result_with_artist_dict():
-    """Handle case where artist is a dict instead of a list."""
-    raw = {
-        "id": 123,
-        "title": "Song",
-        "artist": {"name": "Solo Artist"},
-        "album": {"title": "Album"},
-        "trackNumber": 1,
-        "duration": 200,
-    }
-    parsed = _parse_track_result(raw)
-    assert parsed["artist"] == "Solo Artist"
+def test_score_slskd_result_medium_file_bonus():
+    entry = {"filename": "/music/Artist/Album/song.flac", "size": 25_000_000, "uploadSpeed": 0}
+    score = us._score_slskd_result(entry)
+    assert score >= 50
+
+
+def test_classify_match_quality_hi_res_24bit():
+    entry = {"filename": "/music/Album [24bit]/song.flac", "size": 30_000_000}
+    assert us._classify_match_quality(entry) == "hi_res"
+
+
+def test_classify_match_quality_lossless():
+    entry = {"filename": "/music/Album/song.flac", "size": 25_000_000}
+    assert us._classify_match_quality(entry) == "lossless"
+
+
+def test_classify_match_quality_very_large_file():
+    entry = {"filename": "/music/Album/song.flac", "size": 100_000_000}
+    assert us._classify_match_quality(entry) == "hi_res"
+
+
+def test_get_download_status_completed(monkeypatch):
+    transfers = [
+        {
+            "files": [
+                {
+                    "filename": "/music/Artist/song.flac",
+                    "state": "Completed",
+                    "bytesTransferred": 12345678,
+                    "size": 12345678,
+                    "localFilename": "/downloads/Artist/song.flac",
+                }
+            ]
+        }
+    ]
+    orig = _patch_client(monkeypatch, {("GET", "/api/v0/transfers/downloads/"): (200, transfers)})
+    result = run(us.get_download_status("testuser", "/music/Artist/song.flac"))
+    assert result is not None
+    assert result["state"] == "Completed"
+    assert result["local_filename"] == "/downloads/Artist/song.flac"
+    monkeypatch.setattr(httpx, "AsyncClient", orig)
+
+
+def test_get_download_status_not_found(monkeypatch):
+    orig = _patch_client(monkeypatch, {("GET", "/api/v0/transfers/downloads/"): (200, [])})
+    result = run(us.get_download_status("testuser", "missing.flac"))
+    assert result is None
+    monkeypatch.setattr(httpx, "AsyncClient", orig)
+
+
+def test_get_download_status_matches_by_basename(monkeypatch):
+    """Should find a file by matching just the basename."""
+    transfers = [
+        {
+            "files": [
+                {
+                    "filename": "/long/path/on/slskd/song.flac",
+                    "state": "InProgress",
+                    "bytesTransferred": 5000000,
+                    "size": 12345678,
+                    "localFilename": "/downloads/path/song.flac",
+                }
+            ]
+        }
+    ]
+    orig = _patch_client(monkeypatch, {("GET", "/api/v0/transfers/downloads/"): (200, transfers)})
+    result = run(us.get_download_status("testuser", "/long/path/on/slskd/song.flac"))
+    assert result is not None
+    assert result["state"] == "InProgress"
+    monkeypatch.setattr(httpx, "AsyncClient", orig)

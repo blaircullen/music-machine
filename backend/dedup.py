@@ -1,72 +1,219 @@
 import re
+import struct
+import base64
 import unicodedata
 from collections import defaultdict
+from typing import Iterator
 
 from scanner import quality_score
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def normalize_text(text: str) -> str:
-    """Normalize text for comparison."""
+    """Normalize text for duplicate comparison."""
     if not text:
         return ""
+    # Unicode normalization
     text = unicodedata.normalize("NFKD", text)
     text = text.lower().strip()
-    text = re.sub(r"[^\w\s]", "", text)
+    # Strip punctuation except hyphens
+    text = re.sub(r"[^\w\s\-]", "", text)
+    # Collapse whitespace
     text = re.sub(r"\s+", " ", text).strip()
-    if text.startswith("the "):
-        text = text[4:]
-    return text
+    # Strip common leading articles
+    for article in ("the ", "a ", "an "):
+        if text.startswith(article):
+            text = text[len(article):]
+            break
+    return text.strip()
 
 
-def group_by_metadata(tracks: list[dict]) -> list[list[dict]]:
-    """Group tracks by normalized (artist, title, album). Returns groups with 2+ members."""
-    groups: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+def fingerprint_similarity(fp1: str, fp2: str) -> float:
+    """Compare two Chromaprint fingerprint strings. Returns 0.0 to 1.0."""
+    if not fp1 or not fp2:
+        return 0.0
+    try:
+        # Chromaprint fingerprints are base64url-encoded packed int32 arrays
+        # Pad to multiple of 4
+        def decode_fp(fp: str) -> list[int]:
+            # Convert base64url to standard base64
+            padded = fp.replace("-", "+").replace("_", "/")
+            pad = (4 - len(padded) % 4) % 4
+            padded += "=" * pad
+            raw = base64.b64decode(padded)
+            # Unpack as little-endian uint32 array
+            count = len(raw) // 4
+            return list(struct.unpack(f"<{count}I", raw[:count * 4]))
+
+        ints1 = decode_fp(fp1)
+        ints2 = decode_fp(fp2)
+
+        if not ints1 or not ints2:
+            return 0.0
+
+        # Compare over the shorter length
+        length = min(len(ints1), len(ints2))
+        if length == 0:
+            return 0.0
+
+        # Count matching bits across all compared integers
+        total_bits = length * 32
+        matching_bits = 0
+        for i in range(length):
+            xor = ints1[i] ^ ints2[i]
+            # Count zero bits in xor (matching bits) = 32 - popcount(xor)
+            matching_bits += 32 - bin(xor).count("1")
+
+        return matching_bits / total_bits
+
+    except Exception as e:
+        logger.debug(f"Fingerprint comparison error: {e}")
+        return 0.0
+
+
+def _duration_confidence(durations: list[float]) -> float:
+    """Compute confidence from duration similarity."""
+    valid = [d for d in durations if d and d > 0]
+    if len(valid) < 2:
+        return 0.60
+
+    avg = sum(valid) / len(valid)
+    if avg == 0:
+        return 0.60
+
+    max_deviation = max(abs(d - avg) / avg for d in valid)
+
+    if max_deviation < 0.02:
+        return 0.90
+    elif max_deviation < 0.05:
+        return 0.80
+    elif max_deviation < 0.10:
+        return 0.65
+    else:
+        return 0.60
+
+
+def _within_duration_threshold(tracks: list[dict], threshold_seconds: float = 5.0) -> bool:
+    """Check that all tracks with duration data are within threshold_seconds of each other."""
+    durations = [t.get("duration") for t in tracks if t.get("duration") and t["duration"] > 0]
+    if len(durations) < 2:
+        return True
+    min_d = min(durations)
+    max_d = max(durations)
+    return (max_d - min_d) <= threshold_seconds
+
+
+def find_duplicates(tracks: list[dict]) -> list[dict]:
+    """
+    Full duplicate detection pipeline.
+
+    Stage 1: Group by (normalized artist, normalized title).
+             Album is NOT required — same song on different albums is still a dupe.
+             Duration must be within ±5 seconds.
+
+    Stage 2: For groups where all members have fingerprints, compute fingerprint similarity.
+             If >= 0.75 → confirmed duplicate (fingerprint match).
+             Otherwise → metadata match with duration-based confidence.
+
+    Returns list of group dicts: {match_type, confidence, tracks (sorted best first), keep_track, trash_tracks}
+    """
+    # Stage 1: metadata grouping
+    groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for track in tracks:
         key = (
-            normalize_text(track.get("artist", "")),
-            normalize_text(track.get("title", "")),
-            normalize_text(track.get("album", "")),
+            normalize_text(track.get("artist") or ""),
+            normalize_text(track.get("title") or ""),
         )
+        # Skip tracks with empty artist AND empty title (ungroupable)
+        if not key[0] and not key[1]:
+            continue
         groups[key].append(track)
-    return [members for members in groups.values() if len(members) >= 2]
+
+    results = []
+    for key, members in groups.items():
+        if len(members) < 2:
+            continue
+
+        # Duration gate: require all tracks to be within ±5 seconds
+        if not _within_duration_threshold(members, threshold_seconds=5.0):
+            # Try splitting into sub-groups by duration proximity
+            sub_groups = _split_by_duration(members, threshold_seconds=5.0)
+            for sub in sub_groups:
+                if len(sub) >= 2:
+                    result = _build_group_result(sub)
+                    if result:
+                        results.append(result)
+        else:
+            result = _build_group_result(members)
+            if result:
+                results.append(result)
+
+    return results
 
 
-def compute_confidence(group: list[dict]) -> float:
-    """Compute confidence (0-1) that tracks in a group are true duplicates.
+def _split_by_duration(tracks: list[dict], threshold_seconds: float = 5.0) -> list[list[dict]]:
+    """Split a group of tracks into sub-groups where all members are within threshold of each other."""
+    remaining = list(tracks)
+    groups = []
 
-    Based on duration similarity — if all tracks have similar duration,
-    they're very likely the same recording. Metadata already matched to form the group.
-    """
-    durations = [t.get("duration", 0) for t in group if t.get("duration", 0) > 0]
-    if len(durations) < 2:
-        return 0.5  # No duration data, moderate confidence from metadata match alone
+    while remaining:
+        seed = remaining.pop(0)
+        seed_dur = seed.get("duration") or 0
+        group = [seed]
+        still_remaining = []
 
-    avg = sum(durations) / len(durations)
-    if avg == 0:
-        return 0.5
+        for t in remaining:
+            t_dur = t.get("duration") or 0
+            if seed_dur == 0 or t_dur == 0 or abs(t_dur - seed_dur) <= threshold_seconds:
+                group.append(t)
+            else:
+                still_remaining.append(t)
 
-    max_deviation = max(abs(d - avg) / avg for d in durations)
+        groups.append(group)
+        remaining = still_remaining
 
-    if max_deviation < 0.02:      # Within 2% — almost certainly same recording
-        return 0.95
-    elif max_deviation < 0.05:    # Within 5% — very likely
-        return 0.85
-    elif max_deviation < 0.10:    # Within 10% — probably (could be different edits)
-        return 0.70
-    elif max_deviation < 0.20:    # Within 20% — possible but uncertain
-        return 0.50
-    else:                          # >20% difference — likely different tracks
-        return 0.30
+    return groups
 
 
-def find_duplicates(group: list[dict]) -> dict:
-    """Given a group of duplicate tracks, pick the best and mark the rest for trash."""
-    ranked = sorted(group, key=lambda t: quality_score(t), reverse=True)
-    best = ranked[0]
-    rest = ranked[1:]
+def _build_group_result(members: list[dict]) -> dict | None:
+    """Build a group result dict from a list of track dicts. Returns None if not a real group."""
+    if len(members) < 2:
+        return None
+
+    # Stage 2: fingerprint check
+    fingerprints = [m.get("fingerprint") for m in members]
+    all_have_fingerprints = all(fp for fp in fingerprints)
+
+    match_type = "metadata"
+    confidence = _duration_confidence([m.get("duration") for m in members])
+
+    if all_have_fingerprints:
+        # Compare all pairs — take the minimum similarity (most conservative)
+        min_similarity = 1.0
+        for i in range(len(fingerprints)):
+            for j in range(i + 1, len(fingerprints)):
+                sim = fingerprint_similarity(fingerprints[i], fingerprints[j])
+                min_similarity = min(min_similarity, sim)
+
+        if min_similarity >= 0.75:
+            match_type = "fingerprint"
+            confidence = max(0.95, min(0.99, 0.95 + (min_similarity - 0.75) * 0.2))
+        else:
+            # Fingerprints available but don't match well — lower confidence
+            confidence = min(confidence, 0.60)
+
+    # Rank tracks by quality score
+    ranked = sorted(members, key=lambda t: quality_score(t), reverse=True)
+    keep_track = ranked[0]
+    trash_tracks = ranked[1:]
+
     return {
-        "keep_id": best["id"],
-        "trash_ids": [t["id"] for t in rest],
-        "quality_gap": quality_score(best) - quality_score(rest[0]) if rest else 0,
-        "confidence": compute_confidence(group),
+        "match_type": match_type,
+        "confidence": confidence,
+        "tracks": ranked,
+        "keep_track": keep_track,
+        "trash_tracks": trash_tracks,
     }
