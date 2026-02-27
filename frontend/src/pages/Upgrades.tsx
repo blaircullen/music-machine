@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
-import { ArrowUpCircle, Search, Download, CheckCircle, XCircle, Loader2 } from 'lucide-react'
+import { ArrowUpCircle, Search, Download, CheckCircle, XCircle, Loader2, Server, HardDrive, PackageCheck } from 'lucide-react'
 import { GlassCard, StatCard, Button, Badge, ProgressBar, EmptyState, SkeletonTable, toast } from '../components/ui'
 import { useUpgradeStatus } from '../hooks/useUpgradeStatus'
 
@@ -46,8 +46,8 @@ export default function Upgrades() {
   const { status: upgradeStatus } = useUpgradeStatus()
   const prevPhaseRef = useRef(upgradeStatus.phase)
 
-  const isDownloading = upgradeStatus.phase === 'downloading' || downloadRequested
-  const isSearching = upgradeStatus.phase === 'searching' || searchRequested
+  const isDownloading = (upgradeStatus.phase === 'downloading' && upgradeStatus.running) || downloadRequested
+  const isSearching = (upgradeStatus.phase === 'searching' && upgradeStatus.running) || searchRequested
 
   const fetchQueue = useCallback(async () => {
     setLoading(true)
@@ -78,9 +78,15 @@ export default function Upgrades() {
     if (upgradeStatus.phase === 'searching') setSearchRequested(false)
 
     // Phase just ended → refresh queue
-    if (prev !== 'idle' && upgradeStatus.phase === 'idle') {
+    const justFinished = !upgradeStatus.running && prev !== upgradeStatus.phase
+    if (justFinished && (upgradeStatus.phase === 'complete' || upgradeStatus.phase === 'failed' || upgradeStatus.phase === 'idle')) {
       if (prev === 'searching') toast.success('Search complete')
-      if (prev === 'downloading') toast.success('Downloads complete')
+      if (prev === 'downloading') {
+        const msg = upgradeStatus.failed > 0
+          ? `Downloads done — ${upgradeStatus.completed} completed, ${upgradeStatus.failed} failed`
+          : `Downloaded ${upgradeStatus.completed} tracks`
+        toast.success(msg)
+      }
       setDownloadRequested(false)
       setSearchRequested(false)
       fetchQueue()
@@ -215,12 +221,9 @@ export default function Upgrades() {
       {isSearching && (
         <GlassCard className="p-5 border-blue-500/20 shadow-[0_0_20px_rgba(59,130,246,0.1)]">
           <ProgressBar
-            value={upgradeStatus.progress}
-            max={upgradeStatus.total}
-            label={upgradeStatus.total > 0
-              ? `Searching for upgrades... ${upgradeStatus.progress}/${upgradeStatus.total}`
-              : 'Searching for upgrades...'
-            }
+            value={upgradeStatus.searched}
+            max={0}
+            label={`Searching for upgrades… ${upgradeStatus.searched} searched, ${upgradeStatus.found} found`}
             active
           />
         </GlassCard>
@@ -229,34 +232,104 @@ export default function Upgrades() {
       {/* Download progress panel */}
       {isDownloading && (
         <GlassCard className="p-5 border-lime/30 shadow-[0_0_20px_rgba(16,185,129,0.15)] relative overflow-hidden">
-          {/* Subtle animated background gradient */}
           <div className="absolute inset-0 bg-gradient-to-r from-transparent via-lime/5 to-transparent -translate-x-full animate-[shimmer_2s_infinite]" />
 
-          <div className="flex items-center gap-3 mb-3 relative z-10">
-            <div className="p-2 rounded-xl bg-lime-dim border border-lime/20 shadow-[0_0_10px_rgba(16,185,129,0.2)]">
-              <Download className="w-4 h-4 text-lime animate-bounce" />
+          {/* Header row */}
+          <div className="flex items-center justify-between mb-4 relative z-10">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-xl bg-lime-dim border border-lime/20 shadow-[0_0_10px_rgba(16,185,129,0.2)]">
+                <Download className="w-4 h-4 text-lime animate-bounce" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-base-200">Downloading FLAC upgrades</p>
+                <p className="text-xs text-base-400">
+                  {upgradeStatus.download_total > 0
+                    ? `Track ${upgradeStatus.download_index} of ${upgradeStatus.download_total}`
+                    : 'Starting downloads…'
+                  }
+                </p>
+              </div>
             </div>
-            <div>
-              <p className="text-sm font-medium text-base-300">Downloading FLAC upgrades</p>
-              <p className="text-xs text-base-400">
-                {upgradeStatus.total > 0
-                  ? `Track ${upgradeStatus.progress} of ${upgradeStatus.total}`
-                  : 'Starting downloads...'
-                }
-              </p>
+            {/* Counts */}
+            <div className="flex items-center gap-4 text-xs text-base-400">
+              {upgradeStatus.completed > 0 && (
+                <span className="text-lime font-medium">✓ {upgradeStatus.completed} done</span>
+              )}
+              {upgradeStatus.failed > 0 && (
+                <span className="text-red-400 font-medium">✗ {upgradeStatus.failed} failed</span>
+              )}
             </div>
           </div>
-          <div className="relative z-10">
-            <ProgressBar
-              value={upgradeStatus.progress}
-              max={upgradeStatus.total}
-              active
-            />
+
+          {/* Current track info */}
+          {upgradeStatus.current_track && (
+            <div className="mb-4 relative z-10 bg-base-800/50 rounded-xl p-3 border border-glass-border">
+              <p className="text-xs text-base-400 mb-0.5">Now processing</p>
+              <p className="text-sm font-semibold text-base-100 truncate">{upgradeStatus.current_track}</p>
+              {upgradeStatus.current_album && (
+                <p className="text-xs text-base-400 truncate mt-0.5">{upgradeStatus.current_album}</p>
+              )}
+            </div>
+          )}
+
+          {/* Step pipeline */}
+          <div className="flex items-center gap-2 mb-4 relative z-10">
+            {([
+              { key: 'slskd',       label: 'Soulseek',    icon: Server },
+              { key: 'transferring', label: 'Transfer → NAS', icon: HardDrive },
+              { key: 'importing',   label: 'Import',      icon: PackageCheck },
+            ] as const).map(({ key, label, icon: Icon }, i) => {
+              const steps = ['slskd', 'transferring', 'importing'] as const
+              const currentIdx = steps.indexOf(upgradeStatus.current_step ?? 'slskd')
+              const stepIdx = steps.indexOf(key)
+              const isDone = stepIdx < currentIdx
+              const isActive = key === upgradeStatus.current_step
+              return (
+                <div key={key} className="flex items-center gap-2">
+                  {i > 0 && <div className={`h-px w-6 ${isDone || isActive ? 'bg-lime/50' : 'bg-base-600'}`} />}
+                  <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-all duration-300 ${
+                    isActive
+                      ? 'bg-lime/15 text-lime border border-lime/30 shadow-[0_0_8px_rgba(16,185,129,0.2)]'
+                      : isDone
+                      ? 'bg-base-700/50 text-base-300 border border-base-600'
+                      : 'bg-base-800/50 text-base-500 border border-base-700'
+                  }`}>
+                    {isActive ? <Loader2 className="w-3 h-3 animate-spin" /> : <Icon className="w-3 h-3" />}
+                    {label}
+                  </div>
+                </div>
+              )
+            })}
           </div>
-          {upgradeStatus.current && (
-            <p className="text-xs text-base-400 mt-2 truncate relative z-10">
-              <span className="text-lime/80 font-medium">Downloading:</span> {upgradeStatus.current}
-            </p>
+
+          {/* Byte-level progress (only during slskd download) */}
+          {upgradeStatus.current_step === 'slskd' && upgradeStatus.current_total_bytes > 0 && (
+            <div className="mb-3 relative z-10">
+              <div className="flex justify-between text-xs text-base-400 mb-1">
+                <span>{(upgradeStatus.current_bytes / 1024 / 1024).toFixed(1)} MB</span>
+                <span>{(upgradeStatus.current_total_bytes / 1024 / 1024).toFixed(1)} MB</span>
+              </div>
+              <ProgressBar
+                value={upgradeStatus.current_bytes}
+                max={upgradeStatus.current_total_bytes}
+                active
+              />
+            </div>
+          )}
+
+          {/* Overall progress bar */}
+          {upgradeStatus.download_total > 0 && (
+            <div className="relative z-10">
+              <div className="flex justify-between text-xs text-base-500 mb-1">
+                <span>Overall</span>
+                <span>{upgradeStatus.completed + upgradeStatus.failed} / {upgradeStatus.download_total}</span>
+              </div>
+              <ProgressBar
+                value={upgradeStatus.completed + upgradeStatus.failed}
+                max={upgradeStatus.download_total}
+                active={false}
+              />
+            </div>
           )}
         </GlassCard>
       )}

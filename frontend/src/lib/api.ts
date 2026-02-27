@@ -66,6 +66,15 @@ export interface UpgradeStatus {
   downloading: number
   completed: number
   failed: number
+  current_track: string | null
+  current_artist: string | null
+  current_title: string | null
+  current_album: string | null
+  current_step: 'slskd' | 'transferring' | 'importing' | null
+  current_bytes: number
+  current_total_bytes: number
+  download_index: number
+  download_total: number
 }
 
 export interface Job {

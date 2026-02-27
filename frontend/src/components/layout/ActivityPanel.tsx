@@ -37,24 +37,28 @@ export function ActivityPanel() {
     )
   }
 
-  if (upgrade.phase === 'downloading') {
+  if (upgrade.phase === 'downloading' && upgrade.running) {
+    const stepLabel = upgrade.current_step === 'transferring' ? '→ NAS'
+      : upgrade.current_step === 'importing' ? '→ Library'
+      : '↓ Soulseek'
     return (
       <div className="flex items-center gap-2 text-xs text-lime">
         <Download className="w-3.5 h-3.5 animate-bounce" />
-        <span>
-          Downloading: {upgrade.progress}/{upgrade.total}
-          {upgrade.current && ` — ${upgrade.current}`}
+        <span className="truncate max-w-[240px]">
+          {upgrade.download_total > 0 && `${upgrade.download_index}/${upgrade.download_total} `}
+          {stepLabel}
+          {upgrade.current_track && ` — ${upgrade.current_track}`}
         </span>
       </div>
     )
   }
 
-  if (upgrade.phase === 'searching') {
+  if (upgrade.phase === 'searching' && upgrade.running) {
     return (
       <div className="flex items-center gap-2 text-xs text-lime">
         <Search className="w-3.5 h-3.5 animate-pulse" />
         <span>
-          Searching: {upgrade.progress}/{upgrade.total}
+          Searching: {upgrade.searched} searched, {upgrade.found} found
         </span>
       </div>
     )

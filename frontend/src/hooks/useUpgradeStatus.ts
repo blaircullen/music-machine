@@ -2,14 +2,41 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 
 export interface UpgradeStatus {
   running: boolean
-  phase: 'idle' | 'searching' | 'downloading'
-  current: string
-  progress: number
-  total: number
+  phase: 'idle' | 'searching' | 'downloading' | 'complete' | 'failed'
+  searched: number
+  found: number
+  downloading: number
+  completed: number
+  failed: number
+  // Per-item download detail
+  current_track: string | null
+  current_artist: string | null
+  current_title: string | null
+  current_album: string | null
+  current_step: 'slskd' | 'transferring' | 'importing' | null
+  current_bytes: number
+  current_total_bytes: number
+  download_index: number
+  download_total: number
 }
 
 const INITIAL: UpgradeStatus = {
-  running: false, phase: 'idle', current: '', progress: 0, total: 0,
+  running: false,
+  phase: 'idle',
+  searched: 0,
+  found: 0,
+  downloading: 0,
+  completed: 0,
+  failed: 0,
+  current_track: null,
+  current_artist: null,
+  current_title: null,
+  current_album: null,
+  current_step: null,
+  current_bytes: 0,
+  current_total_bytes: 0,
+  download_index: 0,
+  download_total: 0,
 }
 
 export function useUpgradeStatus() {

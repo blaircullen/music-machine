@@ -27,6 +27,16 @@ upgrade_search_status = {
     "downloading": 0,
     "completed": 0,
     "failed": 0,
+    # Per-item download detail (populated during download phase)
+    "current_track": None,        # "Artist - Title"
+    "current_artist": None,
+    "current_title": None,
+    "current_album": None,
+    "current_step": None,         # "slskd" | "transferring" | "importing"
+    "current_bytes": 0,           # bytes transferred from slskd
+    "current_total_bytes": 0,     # total file size in bytes
+    "download_index": 0,          # 1-based current item number
+    "download_total": 0,          # total items in this download run
 }
 
 _search_lock = threading.Lock()
@@ -256,6 +266,15 @@ def _run_download_worker():
         "downloading": 0,
         "completed": 0,
         "failed": 0,
+        "current_track": None,
+        "current_artist": None,
+        "current_title": None,
+        "current_album": None,
+        "current_step": None,
+        "current_bytes": 0,
+        "current_total_bytes": 0,
+        "download_index": 0,
+        "download_total": 0,
     })
     _broadcast_sync("job_update", dict(upgrade_search_status))
 
@@ -273,18 +292,33 @@ def _run_download_worker():
 
         total = len(approved)
         logger.info(f"Download worker: {total} approved items")
+        upgrade_search_status["download_total"] = total
+        _broadcast_sync("job_update", dict(upgrade_search_status))
 
         from upgrade_service import download_file, fetch_completed_file, get_download_status, cancel_download
 
-        for item in approved:
+        for idx, item in enumerate(approved, start=1):
             item_dict = dict(item)
             queue_id = item_dict["id"]
             username = item_dict["slskd_username"]
             filename = item_dict["slskd_filename"]
             file_size = item_dict.get("slskd_file_size")
             original_path = item_dict["file_path"]
+            artist = item_dict.get("artist") or ""
+            title = item_dict.get("title") or ""
+            album = item_dict.get("album") or ""
 
-            upgrade_search_status["downloading"] += 1
+            upgrade_search_status.update({
+                "downloading": upgrade_search_status["downloading"] + 1,
+                "download_index": idx,
+                "current_track": f"{artist} - {title}" if artist or title else filename.split("\\")[-1],
+                "current_artist": artist,
+                "current_title": title,
+                "current_album": album,
+                "current_step": "slskd",
+                "current_bytes": 0,
+                "current_total_bytes": file_size or 0,
+            })
             _broadcast_sync("job_update", dict(upgrade_search_status))
 
             with get_db() as db:
@@ -309,14 +343,21 @@ def _run_download_worker():
                     time.sleep(poll_interval)
                     elapsed += poll_interval
 
-                    status = asyncio.run(get_download_status(username, filename))
-                    if status is None:
+                    dl_status = asyncio.run(get_download_status(username, filename))
+                    if dl_status is None:
                         continue
 
-                    state = status.get("state", "")
+                    # Update live bytes progress
+                    bytes_done = dl_status.get("bytes_transferred", 0)
+                    total_bytes = dl_status.get("size", 0) or file_size or 0
+                    upgrade_search_status["current_bytes"] = bytes_done
+                    upgrade_search_status["current_total_bytes"] = total_bytes
+                    _broadcast_sync("job_update", dict(upgrade_search_status))
+
+                    state = dl_status.get("state", "")
                     if state.startswith("Completed"):
                         if "Succeeded" in state or state == "Completed":
-                            local_filename = status.get("local_filename")
+                            local_filename = dl_status.get("local_filename")
                             break
                         else:
                             raise RuntimeError(f"slskd download {state}: {username}/{filename}")
@@ -327,6 +368,8 @@ def _run_download_worker():
                     raise RuntimeError(f"Download timed out or no local path: {username}/{filename}")
 
                 # SCP completed file from BuyVM to local /staging
+                upgrade_search_status["current_step"] = "transferring"
+                _broadcast_sync("job_update", dict(upgrade_search_status))
                 staging_file = fetch_completed_file(local_filename, str(staging_root))
                 staging_path = Path(staging_file)
 
@@ -337,6 +380,8 @@ def _run_download_worker():
                 sha256_new = compute_sha256(str(staging_path))
 
                 # Import: verify + move to library
+                upgrade_search_status["current_step"] = "importing"
+                _broadcast_sync("job_update", dict(upgrade_search_status))
                 new_library_path = import_flac(str(staging_path), original_path, music_path)
 
                 # Read metadata from the newly placed FLAC
@@ -488,14 +533,25 @@ def get_upgrade_status():
                FROM upgrade_queue"""
         ).fetchone()
 
+    c = dict(counts) if counts else {}
     return {
         "running": upgrade_search_status["running"],
         "phase": upgrade_search_status["phase"],
         "searched": upgrade_search_status["searched"],
-        "found": dict(counts)["found"] if counts else 0,
-        "downloading": dict(counts)["downloading"] if counts else 0,
-        "completed": dict(counts)["completed"] if counts else 0,
-        "failed": dict(counts)["failed"] if counts else 0,
+        "found": c.get("found", 0),
+        "downloading": c.get("downloading", 0),
+        "completed": c.get("completed", 0),
+        "failed": c.get("failed", 0),
+        # Per-item detail
+        "current_track": upgrade_search_status["current_track"],
+        "current_artist": upgrade_search_status["current_artist"],
+        "current_title": upgrade_search_status["current_title"],
+        "current_album": upgrade_search_status["current_album"],
+        "current_step": upgrade_search_status["current_step"],
+        "current_bytes": upgrade_search_status["current_bytes"],
+        "current_total_bytes": upgrade_search_status["current_total_bytes"],
+        "download_index": upgrade_search_status["download_index"],
+        "download_total": upgrade_search_status["download_total"],
     }
 
 
@@ -543,8 +599,9 @@ def approve_all_upgrades():
 @router.post("/download")
 def start_download():
     """Start downloading all approved upgrade items."""
-    if upgrade_search_status["running"]:
-        return {"ok": False, "error": "A job is already running"}
+    if not _download_lock.acquire(blocking=False):
+        return {"ok": False, "error": "A download is already running"}
+    _download_lock.release()
 
     with get_db() as db:
         count = db.execute(

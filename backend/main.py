@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from database import init_db
@@ -135,4 +136,13 @@ def health():
 # Serve React frontend (present after multi-stage Docker build)
 _frontend_dist = Path("/app/frontend/dist")
 if _frontend_dist.exists():
-    app.mount("/", StaticFiles(directory=str(_frontend_dist), html=True), name="frontend")
+    # Serve /assets/* as static files directly
+    app.mount("/assets", StaticFiles(directory=str(_frontend_dist / "assets")), name="assets")
+
+    # SPA catch-all: serve index.html for all non-API client-side routes
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        file_path = _frontend_dist / full_path
+        if file_path.is_file():
+            return FileResponse(str(file_path))
+        return FileResponse(str(_frontend_dist / "index.html"))

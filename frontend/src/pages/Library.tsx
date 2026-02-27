@@ -10,6 +10,10 @@ import {
   Copy,
   ArrowUpCircle,
   AlertCircle,
+  Loader2,
+  Server,
+  HardDrive,
+  PackageCheck,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { Button } from '../components/ui/Button'
@@ -469,20 +473,92 @@ function UpgradesTab() {
       )}
 
       {isDownloading && (
-        <div className="rounded-xl bg-[#1a1d27] border border-[#6c63ff]/30 p-4">
-          <div className="flex items-center gap-2 mb-2">
-            <Download className="w-4 h-4 text-[#a89fff]" />
-            <span className="text-sm text-[#a89fff]">Downloading FLACs...</span>
+        <div className="rounded-xl bg-[#1a1d27] border border-[#6c63ff]/30 p-4 space-y-3">
+          {/* Header */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Download className="w-4 h-4 text-[#a89fff] animate-bounce" />
+              <span className="text-sm font-semibold text-[#a89fff]">Downloading FLACs</span>
+              {upgradeStatus?.download_total ? (
+                <span className="text-xs text-slate-500">
+                  {upgradeStatus.download_index}/{upgradeStatus.download_total}
+                </span>
+              ) : null}
+            </div>
+            <div className="flex gap-3 text-xs">
+              {(upgradeStatus?.completed ?? 0) > 0 && (
+                <span className="text-emerald-400">✓ {upgradeStatus!.completed}</span>
+              )}
+              {(upgradeStatus?.failed ?? 0) > 0 && (
+                <span className="text-red-400">✗ {upgradeStatus!.failed}</span>
+              )}
+            </div>
           </div>
-          <ProgressBar
-            value={upgradeStatus?.completed}
-            max={
-              (upgradeStatus?.completed ?? 0) +
-              (upgradeStatus?.downloading ?? 0) +
-              (upgradeStatus?.failed ?? 0)
-            }
-            active
-          />
+
+          {/* Current track */}
+          {upgradeStatus?.current_track && (
+            <div className="bg-[#13151f] rounded-lg px-3 py-2 border border-[#2a2d3a]">
+              <p className="text-[10px] text-slate-500 mb-0.5">Now processing</p>
+              <p className="text-sm font-medium text-slate-200 truncate">{upgradeStatus.current_track}</p>
+              {upgradeStatus.current_album && (
+                <p className="text-xs text-slate-500 truncate">{upgradeStatus.current_album}</p>
+              )}
+            </div>
+          )}
+
+          {/* Step pipeline */}
+          <div className="flex items-center gap-2">
+            {([
+              { key: 'slskd', label: 'Soulseek', Icon: Server },
+              { key: 'transferring', label: '→ NAS', Icon: HardDrive },
+              { key: 'importing', label: 'Import', Icon: PackageCheck },
+            ] as const).map(({ key, label, Icon }, i) => {
+              const steps = ['slskd', 'transferring', 'importing'] as const
+              const currentIdx = steps.indexOf(upgradeStatus?.current_step ?? 'slskd')
+              const stepIdx = steps.indexOf(key)
+              const isDone = stepIdx < currentIdx
+              const isActive = key === upgradeStatus?.current_step
+              return (
+                <div key={key} className="flex items-center gap-2">
+                  {i > 0 && <div className={`h-px w-5 ${isDone || isActive ? 'bg-[#6c63ff]/50' : 'bg-[#2a2d3a]'}`} />}
+                  <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-all ${
+                    isActive ? 'bg-[#6c63ff]/15 text-[#a89fff] border border-[#6c63ff]/40'
+                    : isDone ? 'text-slate-400 border border-[#2a2d3a]'
+                    : 'text-slate-600 border border-[#1e2030]'
+                  }`}>
+                    {isActive ? <Loader2 className="w-3 h-3 animate-spin" /> : <Icon className="w-3 h-3" />}
+                    {label}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+
+          {/* Byte progress (slskd step only) */}
+          {upgradeStatus?.current_step === 'slskd' && (upgradeStatus?.current_total_bytes ?? 0) > 0 && (
+            <div>
+              <div className="flex justify-between text-xs text-slate-500 mb-1">
+                <span>{((upgradeStatus.current_bytes ?? 0) / 1024 / 1024).toFixed(1)} MB</span>
+                <span>{((upgradeStatus.current_total_bytes ?? 0) / 1024 / 1024).toFixed(1)} MB</span>
+              </div>
+              <ProgressBar value={upgradeStatus.current_bytes} max={upgradeStatus.current_total_bytes} active />
+            </div>
+          )}
+
+          {/* Overall progress */}
+          {(upgradeStatus?.download_total ?? 0) > 0 && (
+            <div>
+              <div className="flex justify-between text-xs text-slate-500 mb-1">
+                <span>Overall</span>
+                <span>{(upgradeStatus!.completed) + (upgradeStatus!.failed)} / {upgradeStatus!.download_total}</span>
+              </div>
+              <ProgressBar
+                value={(upgradeStatus?.completed ?? 0) + (upgradeStatus?.failed ?? 0)}
+                max={upgradeStatus?.download_total ?? 1}
+                active={false}
+              />
+            </div>
+          )}
         </div>
       )}
 
