@@ -10,6 +10,8 @@ import {
   ChevronRight,
   Clock,
   FileAudio,
+  FolderSync,
+  AlertCircle,
 } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
 import toast from 'react-hot-toast'
@@ -19,6 +21,7 @@ import { Button } from '../components/ui/Button'
 import { useStats } from '../hooks/useStats'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { postScan, getScanStatus, type ScanStatus } from '../lib/api'
+import { useReorgStatus } from '../hooks/useReorgStatus'
 
 const FORMAT_COLORS: Record<string, string> = {
   flac: '#22c55e',
@@ -70,12 +73,29 @@ const PHASE_LABELS: Record<string, string> = {
   complete: 'Scan complete',
 }
 
+const REORG_PHASE_LABELS: Record<string, string> = {
+  scanning: 'Scanning library...',
+  inbox: 'Pulling from inbox...',
+  cleaning: 'Cleaning empty dirs...',
+  complete: 'Reorg complete',
+  failed: 'Reorg failed',
+}
+
+function formatRelativeTime(isoStr: string): string {
+  const diff = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000)
+  if (diff < 60) return 'just now'
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+  return new Date(isoStr).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
 export default function Dashboard() {
   const { stats, loading: statsLoading, refetch } = useStats()
   const { lastMessage, isConnected } = useWebSocket()
   const [scanState, setScanState] = useState<ScanProgressState>(INITIAL_SCAN)
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const wasRunningRef = useRef(false)
+  const reorgStatus = useReorgStatus()
 
   // Merge WebSocket scan_progress events into local state
   useEffect(() => {
@@ -119,6 +139,17 @@ export default function Dashboard() {
     wasRunningRef.current = scanState.running
   }, [scanState.running, refetch])
 
+  const handleReorg = async () => {
+    try {
+      const res = await fetch('/api/reorg/start', { method: 'POST' })
+      const data = await res.json()
+      if (!data.ok) throw new Error(data.error ?? 'Failed')
+      toast.success('Library reorg started')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to start reorg')
+    }
+  }
+
   const handleScan = async () => {
     try {
       await postScan()
@@ -159,10 +190,10 @@ export default function Dashboard() {
 
       {/* Active scan panel */}
       {scanState.running && (
-        <div className="rounded-xl bg-[#1a1d27] border border-[#6c63ff]/30 p-5 shadow-[0_0_20px_rgba(108,99,255,0.1)]">
+        <div className="rounded-xl bg-[#1a1d27] border border-[#0ea5e9]/30 p-5 shadow-[0_0_20px_rgba(14,165,233,0.1)]">
           <div className="flex items-center gap-2 mb-3">
-            <div className="w-2 h-2 rounded-full bg-[#6c63ff] animate-pulse" />
-            <span className="text-sm font-medium text-[#a89fff]">
+            <div className="w-2 h-2 rounded-full bg-[#0ea5e9] animate-pulse" />
+            <span className="text-sm font-medium text-[#7dd3fc]">
               {PHASE_LABELS[scanState.phase] ?? scanState.phase ?? 'Working...'}
             </span>
           </div>
@@ -275,7 +306,7 @@ export default function Dashboard() {
                   {chartData.map((entry, i) => (
                     <Cell
                       key={i}
-                      fill={FORMAT_COLORS[entry.format.toLowerCase()] ?? '#6c63ff'}
+                      fill={FORMAT_COLORS[entry.format.toLowerCase()] ?? '#0ea5e9'}
                     />
                   ))}
                 </Bar>
@@ -345,6 +376,128 @@ export default function Dashboard() {
             </Link>
           </div>
         </div>
+      </div>
+      {/* Library Reorg panel */}
+      <div className={`rounded-xl bg-[#1a1d27] border p-5 transition-colors duration-300 ${
+        reorgStatus.running ? 'border-[#0ea5e9]/30 shadow-[0_0_20px_rgba(14,165,233,0.08)]' : 'border-[#2a2d3a]'
+      }`}>
+        {/* Header row */}
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className={`shrink-0 rounded-lg p-2.5 ${reorgStatus.running ? 'bg-[#0ea5e9]/15 text-[#38bdf8]' : 'bg-[#0ea5e9]/10 text-[#7dd3fc]'}`}>
+              <FolderSync className={`w-5 h-5 ${reorgStatus.running ? 'animate-spin' : ''}`} style={reorgStatus.running ? { animationDuration: '3s' } : {}} />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <p className="text-sm font-semibold text-slate-200">Library Reorg</p>
+                {reorgStatus.running && (
+                  <span className="text-xs text-[#7dd3fc] font-medium">
+                    {REORG_PHASE_LABELS[reorgStatus.phase] ?? reorgStatus.phase ?? 'Working...'}
+                  </span>
+                )}
+              </div>
+              {!reorgStatus.running && (
+                reorgStatus.last_run ? (
+                  reorgStatus.last_run.error ? (
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <AlertCircle className="w-3 h-3 text-[#f87171] shrink-0" />
+                      <span className="text-xs text-[#f87171]">{reorgStatus.last_run.error}</span>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {formatRelativeTime(reorgStatus.last_run.timestamp)}
+                      {' · '}
+                      <span className="text-slate-400">{reorgStatus.last_run.moved} moved</span>
+                      {reorgStatus.last_run.inbox_moved > 0 && (
+                        <> · <span className="text-[#7dd3fc]">{reorgStatus.last_run.inbox_moved} from inbox</span></>
+                      )}
+                      {' · '}
+                      {reorgStatus.last_run.skipped} skipped
+                      {reorgStatus.last_run.errors > 0 && (
+                        <> · <span className="text-[#f87171]">{reorgStatus.last_run.errors} errors</span></>
+                      )}
+                    </p>
+                  )
+                ) : (
+                  <p className="text-xs text-slate-500 mt-0.5">No runs recorded yet</p>
+                )
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-3 shrink-0">
+            {reorgStatus.running && reorgStatus.elapsed_s > 0 && (
+              <span className="text-xs text-slate-500 font-mono flex items-center gap-1">
+                <Clock className="w-3 h-3" />
+                {formatElapsed(reorgStatus.elapsed_s)}
+              </span>
+            )}
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={handleReorg}
+              disabled={reorgStatus.running}
+              loading={reorgStatus.running}
+            >
+              <FolderSync className="w-3.5 h-3.5" />
+              {reorgStatus.running ? 'Running...' : 'Run Now'}
+            </Button>
+          </div>
+        </div>
+
+        {/* Live progress — only while running */}
+        {reorgStatus.running && (
+          <div className="mt-4 space-y-3">
+            {/* Progress bar */}
+            <ProgressBar
+              value={reorgStatus.total > 0 ? reorgStatus.progress : undefined}
+              max={reorgStatus.total > 0 ? reorgStatus.total : undefined}
+              active
+            />
+
+            {/* Live counters */}
+            <div className="flex flex-wrap gap-3 text-xs">
+              <span className="flex items-center gap-1 text-[#4ade80]">
+                <span className="font-bold tabular-nums">{reorgStatus.moved}</span>
+                <span className="text-slate-500">moved</span>
+              </span>
+              {reorgStatus.inbox_moved > 0 && (
+                <span className="flex items-center gap-1 text-[#7dd3fc]">
+                  <span className="font-bold tabular-nums">{reorgStatus.inbox_moved}</span>
+                  <span className="text-slate-500">from inbox</span>
+                </span>
+              )}
+              <span className="flex items-center gap-1 text-slate-400">
+                <span className="font-bold tabular-nums">{reorgStatus.already_ok}</span>
+                <span className="text-slate-500">already ok</span>
+              </span>
+              <span className="flex items-center gap-1 text-slate-400">
+                <span className="font-bold tabular-nums">{reorgStatus.skipped}</span>
+                <span className="text-slate-500">skipped</span>
+              </span>
+              {reorgStatus.errors > 0 && (
+                <span className="flex items-center gap-1 text-[#f87171]">
+                  <span className="font-bold tabular-nums">{reorgStatus.errors}</span>
+                  <span className="text-slate-500">errors</span>
+                </span>
+              )}
+              {reorgStatus.total > 0 && (
+                <span className="ml-auto text-slate-600 tabular-nums">
+                  {reorgStatus.progress} / {reorgStatus.total}
+                </span>
+              )}
+            </div>
+
+            {/* Current file */}
+            {reorgStatus.current_file && (
+              <div className="flex items-center gap-1.5 min-w-0">
+                <FileAudio className="w-3.5 h-3.5 text-slate-600 shrink-0" />
+                <span className="text-xs text-slate-600 font-mono truncate">
+                  {truncatePath(reorgStatus.current_file)}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

@@ -24,10 +24,10 @@ export function ProgressBar({ value, max, label, active = false }: ProgressBarPr
       <div className="h-2 w-full rounded-full bg-[#2a2d3a] overflow-hidden">
         {active && !hasValue ? (
           <div
-            className="h-full w-1/3 rounded-full bg-[#6c63ff] progress-shimmer"
+            className="h-full w-1/3 rounded-full bg-[#0ea5e9] progress-shimmer"
             style={{
               backgroundImage:
-                'linear-gradient(90deg, #6c63ff 0%, #a89fff 50%, #6c63ff 100%)',
+                'linear-gradient(90deg, #0ea5e9 0%, #7dd3fc 50%, #0ea5e9 100%)',
               backgroundSize: '200% 100%',
               animation: 'progressSlide 1.4s ease-in-out infinite',
             }}
@@ -38,8 +38,8 @@ export function ProgressBar({ value, max, label, active = false }: ProgressBarPr
             style={{
               width: `${pct}%`,
               background: active
-                ? 'linear-gradient(90deg, #6c63ff, #a89fff, #6c63ff)'
-                : '#6c63ff',
+                ? 'linear-gradient(90deg, #0ea5e9, #7dd3fc, #0ea5e9)'
+                : '#0ea5e9',
               backgroundSize: active ? '200% 100%' : undefined,
               animation: active ? 'shimmerBar 1.8s linear infinite' : undefined,
             }}

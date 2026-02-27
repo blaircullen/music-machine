@@ -12,7 +12,7 @@ interface StatCardProps {
 
 const ACCENT_CLASSES = {
   purple: {
-    icon: 'bg-[#6c63ff]/15 text-[#a89fff]',
+    icon: 'bg-[#0ea5e9]/15 text-[#7dd3fc]',
     value: 'text-white',
   },
   green: {

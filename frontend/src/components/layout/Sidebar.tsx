@@ -44,7 +44,7 @@ export function Sidebar() {
     <aside className="fixed left-0 top-0 h-screen w-[220px] flex flex-col bg-[#13151f] border-r border-[#2a2d3a] z-40">
       {/* Logo */}
       <div className="flex items-center gap-3 px-5 h-16 border-b border-[#2a2d3a] shrink-0">
-        <div className="w-8 h-8 rounded-lg bg-[#6c63ff] flex items-center justify-center shrink-0 shadow-[0_0_12px_rgba(108,99,255,0.4)]">
+        <div className="w-8 h-8 rounded-lg bg-[#0ea5e9] flex items-center justify-center shrink-0 shadow-[0_0_12px_rgba(14,165,233,0.4)]">
           <Music2 className="w-4 h-4 text-white" />
         </div>
         <span className="text-sm font-bold text-white tracking-tight">ShoopDeDupe</span>
@@ -61,7 +61,7 @@ export function Sidebar() {
               [
                 'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 relative',
                 isActive
-                  ? 'text-[#a89fff] bg-[#6c63ff]/10 border-l-2 border-[#6c63ff]'
+                  ? 'text-[#7dd3fc] bg-[#0ea5e9]/10 border-l-2 border-[#0ea5e9]'
                   : 'text-slate-400 hover:text-slate-200 hover:bg-[#1a1d27] border-l-2 border-transparent',
               ].join(' ')
             }

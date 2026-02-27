@@ -9,7 +9,7 @@ export default function App() {
     <BrowserRouter>
       <div className="min-h-screen flex">
         <Sidebar />
-        <main className="ml-[220px] flex-1 p-8 min-h-screen">
+        <main className="ml-[220px] flex-1 p-8 min-h-screen min-w-0 overflow-x-hidden">
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/library" element={<Library />} />

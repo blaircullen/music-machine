@@ -175,16 +175,16 @@ function DuplicatesTab() {
         </div>
       ) : (
         <div className="rounded-xl bg-[#1a1d27] border border-[#2a2d3a] overflow-hidden">
-          <table className="w-full text-sm">
+          <table className="w-full text-sm table-fixed">
             <thead>
               <tr className="border-b border-[#2a2d3a] text-xs text-slate-500 uppercase tracking-wide">
                 <th className="px-4 py-3 text-left font-medium w-8" />
-                <th className="px-4 py-3 text-left font-medium">Artist</th>
+                <th className="px-4 py-3 text-left font-medium w-[22%]">Artist</th>
                 <th className="px-4 py-3 text-left font-medium">Title</th>
-                <th className="px-4 py-3 text-center font-medium">Match</th>
-                <th className="px-4 py-3 text-center font-medium">Confidence</th>
-                <th className="px-4 py-3 text-center font-medium">Members</th>
-                <th className="px-4 py-3 text-right font-medium">Actions</th>
+                <th className="px-4 py-3 text-center font-medium w-[10%]">Match</th>
+                <th className="px-4 py-3 text-center font-medium w-[10%]">Confidence</th>
+                <th className="px-4 py-3 text-center font-medium w-[8%]">Members</th>
+                <th className="px-4 py-3 text-right font-medium w-[12%]">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -212,10 +212,10 @@ function DuplicatesTab() {
                           className={`w-4 h-4 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`}
                         />
                       </td>
-                      <td className="px-4 py-3.5 text-slate-200 font-medium">
+                      <td className="px-4 py-3.5 text-slate-200 font-medium truncate max-w-0">
                         {rep?.artist || '—'}
                       </td>
-                      <td className="px-4 py-3.5 text-slate-300">{rep?.title || '—'}</td>
+                      <td className="px-4 py-3.5 text-slate-300 truncate max-w-0">{rep?.title || '—'}</td>
                       <td className="px-4 py-3.5 text-center">
                         <span className="text-xs bg-[#2a2d3a] px-2 py-0.5 rounded-full text-slate-400">
                           {group.match_type}
@@ -563,7 +563,7 @@ function UpgradesTab() {
       )}
 
       {/* Actions row */}
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex gap-1 flex-wrap">
           {UPGRADE_FILTERS.map((key) => {
             const count = key === 'all' ? upgrades.length : upgrades.filter((u) => u.status === key).length
@@ -635,16 +635,16 @@ function UpgradesTab() {
         </div>
       ) : (
         <div className="rounded-xl bg-[#1a1d27] border border-[#2a2d3a] overflow-hidden">
-          <table className="w-full text-sm">
+          <table className="w-full text-sm table-fixed">
             <thead>
               <tr className="border-b border-[#2a2d3a] text-xs text-slate-500 uppercase tracking-wide">
-                <th className="px-4 py-3 text-left font-medium">Artist</th>
-                <th className="px-4 py-3 text-left font-medium">Album</th>
+                <th className="px-4 py-3 text-left font-medium w-[18%]">Artist</th>
+                <th className="px-4 py-3 text-left font-medium w-[18%]">Album</th>
                 <th className="px-4 py-3 text-left font-medium">Title</th>
-                <th className="px-4 py-3 text-left font-medium">Format</th>
-                <th className="px-4 py-3 text-center font-medium">Match</th>
-                <th className="px-4 py-3 text-center font-medium">Status</th>
-                <th className="px-4 py-3 text-right font-medium">Actions</th>
+                <th className="px-4 py-3 text-left font-medium w-[8%]">Format</th>
+                <th className="px-4 py-3 text-center font-medium w-[8%]">Match</th>
+                <th className="px-4 py-3 text-center font-medium w-[9%]">Status</th>
+                <th className="px-4 py-3 text-right font-medium w-[12%]">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -655,9 +655,9 @@ function UpgradesTab() {
                     key={upgrade.id}
                     className="border-b border-[#2a2d3a]/50 hover:bg-white/[0.02] transition-colors"
                   >
-                    <td className="px-4 py-3.5 text-slate-200 font-medium">{upgrade.artist || '—'}</td>
-                    <td className="px-4 py-3.5 text-slate-400">{upgrade.album || '—'}</td>
-                    <td className="px-4 py-3.5 text-slate-300">{upgrade.title || '—'}</td>
+                    <td className="px-4 py-3.5 text-slate-200 font-medium truncate max-w-0">{upgrade.artist || '—'}</td>
+                    <td className="px-4 py-3.5 text-slate-400 truncate max-w-0">{upgrade.album || '—'}</td>
+                    <td className="px-4 py-3.5 text-slate-300 truncate max-w-0">{upgrade.title || '—'}</td>
                     <td className="px-4 py-3.5">
                       <FormatBadge format={upgrade.format} />
                     </td>
