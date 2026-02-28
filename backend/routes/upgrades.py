@@ -25,7 +25,7 @@ router = APIRouter(prefix="/api/upgrades", tags=["upgrades"])
 class ScanScope(BaseModel):
     format_filter: Literal["all_lossy", "mp3", "aac", "m4a", "ogg", "wma", "opus", "cd_flac"] = "all_lossy"
     unscanned_only: bool = True
-    batch_size: int = Field(default=50, ge=0)
+    batch_size: int = Field(default=0, ge=0)
     artist_filter: str | None = None
 
 LOSSY_FORMATS = {"mp3", "aac", "m4a", "ogg", "wma", "opus"}
@@ -84,7 +84,7 @@ def _get_setting(key: str, default: str) -> str:
 def _run_upgrade_search_worker(
     format_filter: str = "all_lossy",
     unscanned_only: bool = True,
-    batch_size: int = 50,
+    batch_size: int = 0,
     artist_filter: str | None = None,
 ):
     """
@@ -138,7 +138,7 @@ def _run_upgrade_search_worker(
             unscanned_clause = """
                 AND t.id NOT IN (
                     SELECT track_id FROM upgrade_queue
-                    WHERE status NOT IN ('failed', 'skipped')
+                    WHERE status NOT IN ('failed', 'skipped', 'pending', 'searching')
                 )
             """
 
