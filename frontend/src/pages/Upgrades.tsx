@@ -153,6 +153,15 @@ export default function Upgrades() {
     }
   }, [filterTab, fetchQueue, fetchCoverage, fetchUnscanned])
 
+  // Poll queue while downloading so table shows live status changes
+  useEffect(() => {
+    if (!isDownloading) return
+    const timer = setInterval(() => {
+      if (filterTab !== 'unscanned') fetchQueue()
+    }, 3000)
+    return () => clearInterval(timer)
+  }, [isDownloading, filterTab, fetchQueue])
+
   // React to phase transitions
   useEffect(() => {
     const prev = prevPhaseRef.current
