@@ -540,9 +540,15 @@ export default function Upgrades() {
       )}
 
       <div className="grid grid-cols-3 gap-4">
-        <StatCard icon={ArrowUpCircle} label="Candidates" value={totalCandidates.toLocaleString()} />
-        <StatCard icon={CheckCircle} label="Hi-Res Found" value={hiResMatches.toLocaleString()} />
-        <StatCard icon={Download} label="Approved" value={approvedCount.toLocaleString()} />
+        {filterTab === 'unscanned' ? <>
+          <StatCard icon={ArrowUpCircle} label="Never Scanned" value={(coverage?.unscanned ?? 0).toLocaleString()} />
+          <StatCard icon={CheckCircle} label="Found" value={(coverage?.found ?? 0).toLocaleString()} />
+          <StatCard icon={Download} label="Completed" value={(coverage?.completed ?? 0).toLocaleString()} />
+        </> : <>
+          <StatCard icon={ArrowUpCircle} label="Candidates" value={totalCandidates.toLocaleString()} />
+          <StatCard icon={CheckCircle} label="Hi-Res Found" value={hiResMatches.toLocaleString()} />
+          <StatCard icon={Download} label="Approved" value={approvedCount.toLocaleString()} />
+        </>}
       </div>
 
       <div className="flex items-center gap-2">
