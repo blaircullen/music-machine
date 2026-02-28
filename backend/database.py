@@ -105,6 +105,8 @@ def init_db():
             ("slskd_search_timeout_s", "20"),
             ("auto_resolve_threshold", "0.0"),
             ("upgrade_scan_limit", "0"),
+            ("upgrade_concurrency", "8"),
+            ("upgrade_include_flac_hires", "true"),
         ]
         for key, value in defaults:
             db.execute(

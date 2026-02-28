@@ -145,6 +145,23 @@ def _process_file(src: str, stats: dict, emptied_dirs: set, dry_run: bool):
         rel_dest = os.path.relpath(dest, MUSIC_ROOT)
         logger.info(f"Moved: {rel_src} -> {rel_dest}")
         emptied_dirs.add(os.path.dirname(src))
+        # Update DB so scan doesn't create a stale 'deleted' record + new duplicate
+        try:
+            from database import get_db
+            with get_db() as db:
+                # Remove any stale (trashed/deleted) record at the new path to avoid
+                # UNIQUE constraint violation when we update the active record's path
+                db.execute(
+                    "DELETE FROM tracks WHERE file_path = ? AND status != 'active'",
+                    (dest,),
+                )
+                db.execute(
+                    "UPDATE tracks SET file_path = ?, scanned_at = CURRENT_TIMESTAMP"
+                    " WHERE file_path = ? AND status = 'active'",
+                    (dest, src),
+                )
+        except Exception as db_err:
+            logger.warning(f"DB path update failed after move ({src} -> {dest}): {db_err}")
     except Exception as e:
         stats["errors"] += 1
         logger.error(f"Move failed {src}: {e}")

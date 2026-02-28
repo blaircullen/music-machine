@@ -13,6 +13,14 @@ Python 3.12, FastAPI, SQLite, React 18, Vite, Tailwind CSS
 - Docker run: `docker compose up -d`
 - Full rebuild: `docker compose build --no-cache && docker compose up -d`
 
+## Deploy (from dev machine)
+```bash
+ssh-add --apple-load-keychain 2>/dev/null
+rsync -av frontend/src/ sunygxc@10.0.0.75:/home/sunygxc/projects/plex-dedup/frontend/src/
+ssh vm101 "cd /home/sunygxc/projects/plex-dedup && docker compose build --no-cache && docker compose up -d"
+```
+Note: `ssh-add --apple-load-keychain` must run in the same shell session before SSH commands.
+
 ## Architecture
 - `backend/` — FastAPI app
   - `scanner.py` — audio tag reading (mutagen) and fingerprinting (chromaprint)

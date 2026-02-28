@@ -1,7 +1,9 @@
 import asyncio
 import logging
 import os
+import re
 import subprocess
+import unicodedata
 import urllib.parse
 from pathlib import Path
 
@@ -51,6 +53,67 @@ def _score_slskd_result(entry: dict) -> int:
     return score
 
 
+def _normalize_text(text: str) -> str:
+    """Normalize text for comparison (mirrors dedup.py normalize_text)."""
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFKD", text)
+    text = text.lower().strip()
+    text = re.sub(r"[^\w\s\-]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _extract_track_number(filename: str) -> int | None:
+    """Extract a leading track number from a filename like '03 - Title.flac' or '03_Title.flac'."""
+    basename = Path(filename).stem
+    m = re.match(r"^(\d{1,3})[\s\-_]", basename)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _match_file_to_track(filenames: list[str], track: dict) -> str | None:
+    """
+    Given a list of candidate FLAC filenames and a track dict {title, track_number},
+    return the best matching filename.
+    Prefers track-number match, falls back to normalized title similarity.
+    """
+    track_num = track.get("track_number")
+    title = _normalize_text(track.get("title") or "")
+
+    best_name = None
+    best_score = -1
+
+    for name in filenames:
+        score = 0
+        extracted_num = _extract_track_number(name)
+
+        if track_num and extracted_num is not None:
+            if extracted_num == track_num:
+                score += 1000
+        elif extracted_num is not None and track_num:
+            # Number present but doesn't match — slight penalty
+            score -= 100
+
+        # Title similarity via shared words
+        if title:
+            norm_name = _normalize_text(Path(name).stem)
+            # Remove leading track number prefix from filename for title matching
+            norm_name = re.sub(r"^\d{1,3}[\s\-_]+", "", norm_name)
+            title_words = set(title.split())
+            name_words = set(norm_name.split())
+            if title_words:
+                overlap = len(title_words & name_words) / len(title_words)
+                score += int(overlap * 100)
+
+        if score > best_score:
+            best_score = score
+            best_name = name
+
+    return best_name
+
+
 def _classify_match_quality(entry: dict) -> str:
     """Classify a found file as hi_res or lossless."""
     filename = (entry.get("filename") or "").lower()
@@ -73,11 +136,13 @@ async def search_for_flac(
     album: str,
     title: str,
     timeout_s: int = 20,
+    hi_res_only: bool = False,
 ) -> dict | None:
     """
     Search slskd for a FLAC version of the given track.
     Returns the best match dict or None.
 
+    When hi_res_only=True, only returns a result classified as "hi_res".
     Return shape: {username, filename, file_size, match_quality, slskd_search_id}
     """
     query = f"{artist} {album}" if album else f"{artist} {title}"
@@ -170,13 +235,156 @@ async def search_for_flac(
     if not best_entry:
         return None
 
+    quality = _classify_match_quality(best_entry)
+    if hi_res_only and quality != "hi_res":
+        return None
+
     return {
         "username": best_entry.get("username"),
         "filename": best_entry.get("filename"),
         "file_size": best_entry.get("size"),
-        "match_quality": _classify_match_quality(best_entry),
+        "match_quality": quality,
         "slskd_search_id": search_id,
     }
+
+
+async def search_album(
+    artist: str,
+    album: str,
+    tracks: list[dict],
+    timeout_s: int = 15,
+) -> dict[int, dict]:
+    """
+    Single slskd search for an (artist, album) group.
+    Returns a dict keyed by track_id → best matching result dict.
+
+    tracks: list of {id, title, track_number, format, bit_depth}
+    """
+    query = f"{artist} {album}"
+    results: dict[int, dict] = {}
+
+    async with httpx.AsyncClient(headers=_HEADERS, timeout=HTTP_TIMEOUT) as client:
+        try:
+            resp = await client.post(
+                f"{SLSKD_URL}/api/v0/searches",
+                json={
+                    "searchText": query,
+                    "fileType": "Audio",
+                    "searchTimeout": timeout_s * 1000,
+                },
+            )
+            resp.raise_for_status()
+            search_data = resp.json()
+        except Exception as e:
+            logger.warning(f"slskd album search failed for '{query}': {e}")
+            return results
+
+        search_id = search_data.get("id")
+        if not search_id:
+            logger.warning(f"slskd returned no search ID for album '{query}'")
+            return results
+
+        # Poll until search completes
+        elapsed = 0
+        poll_interval = 3
+        all_flac_files: list[dict] = []  # enriched file entries
+
+        while elapsed < timeout_s + 5:
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+
+            try:
+                resp = await client.get(
+                    f"{SLSKD_URL}/api/v0/searches/{search_id}/responses"
+                )
+                resp.raise_for_status()
+                responses = resp.json()
+            except Exception as e:
+                logger.debug(f"album search poll error for {search_id}: {e}")
+                continue
+
+            try:
+                status_resp = await client.get(
+                    f"{SLSKD_URL}/api/v0/searches/{search_id}"
+                )
+                if status_resp.status_code == 200:
+                    search_state = status_resp.json().get("state", "")
+                    if search_state in ("Completed", "Cancelled", "TimedOut"):
+                        try:
+                            resp2 = await client.get(
+                                f"{SLSKD_URL}/api/v0/searches/{search_id}/responses"
+                            )
+                            if resp2.status_code == 200:
+                                responses = resp2.json()
+                        except Exception:
+                            pass
+                        break
+            except Exception:
+                pass
+
+            # Collect all .flac files from all users
+            all_flac_files = []
+            for user_response in (responses or []):
+                username = user_response.get("username", "")
+                upload_speed = user_response.get("uploadSpeed", 0)
+                for file_entry in (user_response.get("files") or []):
+                    filename = file_entry.get("filename") or ""
+                    if not filename.lower().endswith(".flac"):
+                        continue
+                    all_flac_files.append({
+                        **file_entry,
+                        "username": username,
+                        "uploadSpeed": upload_speed,
+                    })
+
+    if not all_flac_files:
+        logger.debug(f"No FLAC files found for album '{query}'")
+        return results
+
+    # For each track, find the best matching file
+    # Group by username/directory to prefer complete albums from one user
+    # Score all files first
+    scored_files = [(entry, _score_slskd_result(entry)) for entry in all_flac_files]
+    filenames_all = [entry.get("filename", "") for entry, _ in scored_files]
+
+    for track in tracks:
+        track_id = track["id"]
+        is_flac_source = (track.get("format") or "").lower() == "flac"
+
+        best_match_filename = _match_file_to_track(filenames_all, track)
+        if not best_match_filename:
+            continue
+
+        # Find the enriched entry for this filename
+        best_entry = next(
+            (e for e, _ in scored_files if e.get("filename") == best_match_filename),
+            None,
+        )
+        if not best_entry:
+            continue
+
+        quality = _classify_match_quality(best_entry)
+
+        # For FLAC source tracks, skip unless this is a hi_res upgrade
+        if is_flac_source and quality != "hi_res":
+            logger.debug(
+                f"Skipping FLAC→lossless non-upgrade for track {track_id}: {best_match_filename}"
+            )
+            continue
+
+        results[track_id] = {
+            "username": best_entry.get("username"),
+            "filename": best_entry.get("filename"),
+            "file_size": best_entry.get("size"),
+            "match_quality": quality,
+            "slskd_search_id": search_id,
+        }
+
+    logger.info(
+        f"Album search '{query}': {len(all_flac_files)} FLACs found, "
+        f"{len(results)}/{len(tracks)} tracks matched"
+    )
+    return results
 
 
 async def download_file(

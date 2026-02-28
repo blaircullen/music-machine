@@ -3,6 +3,8 @@ import logging
 import os
 import threading
 import time
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -17,6 +19,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/upgrades", tags=["upgrades"])
 
 LOSSY_FORMATS = {"mp3", "aac", "m4a", "ogg", "wma", "opus"}
+_counter_lock = threading.Lock()
 
 # Global upgrade status
 upgrade_search_status = {
@@ -70,7 +73,8 @@ def _get_setting(key: str, default: str) -> str:
 
 def _run_upgrade_search_worker():
     """
-    Background thread: search slskd for FLAC upgrades of all pending lossy tracks.
+    Background thread: search slskd for FLAC upgrades of pending lossy and CD-quality FLAC tracks.
+    Uses album-level parallel searching to reduce search time and API calls.
     """
     if not _search_lock.acquire(blocking=False):
         logger.warning("Upgrade search already running")
@@ -86,8 +90,9 @@ def _run_upgrade_search_worker():
     except Exception as e:
         logger.error(f"Failed to create upgrade_search job: {e}")
 
-    timeout_s = int(_get_setting("slskd_search_timeout_s", "20"))
+    timeout_s = int(_get_setting("slskd_search_timeout_s", "15"))
     scan_limit = int(_get_setting("upgrade_scan_limit", "0"))
+    concurrency = int(_get_setting("upgrade_concurrency", "8"))
 
     upgrade_search_status.update({
         "running": True,
@@ -101,12 +106,15 @@ def _run_upgrade_search_worker():
     _broadcast_sync("job_update", dict(upgrade_search_status))
 
     try:
-        # Find lossy tracks not already in the upgrade queue (pending or better)
+        # Fetch candidates: lossy tracks + CD-quality FLAC tracks (bit_depth <= 16)
         with get_db() as db:
-            music_path = os.environ.get("MUSIC_PATH", "/music")
+            lossy_placeholders = ",".join("?" * len(LOSSY_FORMATS))
             query = f"""
                 SELECT t.* FROM tracks t
-                WHERE t.format IN ({','.join('?' * len(LOSSY_FORMATS))})
+                WHERE (
+                    t.format IN ({lossy_placeholders})
+                    OR (t.format = 'flac' AND (t.bit_depth IS NULL OR t.bit_depth <= 16))
+                )
                 AND t.status = 'active'
                 AND t.id NOT IN (
                     SELECT track_id FROM upgrade_queue
@@ -120,24 +128,22 @@ def _run_upgrade_search_worker():
             candidates = db.execute(query, params).fetchall()
 
         total = len(candidates)
-        logger.info(f"Upgrade search: {total} lossy tracks to search")
+        logger.info(
+            f"Upgrade search: {total} tracks to search "
+            f"(lossy + CD-quality FLAC), concurrency={concurrency}"
+        )
 
-        from upgrade_service import search_for_flac
-
-        for i, track in enumerate(candidates):
-            upgrade_search_status["searched"] = i + 1
-            _broadcast_sync("job_update", dict(upgrade_search_status))
-
+        # Pre-create queue entries for all candidates
+        track_to_queue: dict[int, int] = {}  # track_id → queue_id
+        for track in candidates:
             track_dict = dict(track)
+            track_id = track_dict["id"]
             artist = track_dict.get("artist") or ""
             album = track_dict.get("album") or ""
             title = track_dict.get("title") or ""
-
-            # Ensure there's a queue entry
             with get_db() as db:
                 existing = db.execute(
-                    "SELECT id FROM upgrade_queue WHERE track_id = ?",
-                    (track_dict["id"],),
+                    "SELECT id FROM upgrade_queue WHERE track_id = ?", (track_id,)
                 ).fetchone()
                 if existing:
                     queue_id = existing["id"]
@@ -147,68 +153,133 @@ def _run_upgrade_search_worker():
                     )
                 else:
                     cursor = db.execute(
-                        """INSERT INTO upgrade_queue
-                           (track_id, search_query, status)
-                           VALUES (?, ?, 'searching')""",
-                        (track_dict["id"], f"{artist} {album or title}"),
+                        "INSERT INTO upgrade_queue (track_id, search_query, status) VALUES (?, ?, 'searching')",
+                        (track_id, f"{artist} {album or title}"),
                     )
                     queue_id = cursor.lastrowid
+                track_to_queue[track_id] = queue_id
 
+        # Group candidates by (artist, album); tracks with no album use individual search
+        grouped: dict[tuple, list[dict]] = defaultdict(list)
+        individual: list[dict] = []
+        for track in candidates:
+            track_dict = dict(track)
+            artist = (track_dict.get("artist") or "").strip()
+            album = (track_dict.get("album") or "").strip()
+            if album:
+                grouped[(artist, album)].append(track_dict)
+            else:
+                individual.append(track_dict)
+
+        logger.info(
+            f"Upgrade search: {len(grouped)} album groups, "
+            f"{len(individual)} individual (no-album) tracks"
+        )
+
+        from upgrade_service import search_album, search_for_flac
+
+        def _search_group(group_key: tuple, tracks_in_group: list[dict]) -> dict[int, dict | None]:
+            """Worker: run one album-level search, returns track_id → result|None."""
+            artist, album = group_key
             try:
-                # Run async search in new event loop (we're in a thread)
+                return asyncio.run(search_album(artist, album, tracks_in_group, timeout_s))
+            except Exception as e:
+                logger.error(f"Album search error for '{artist} - {album}': {e}")
+                return {}
+
+        def _search_individual(track_dict: dict) -> tuple[int, dict | None]:
+            """Worker: run one individual track search, returns (track_id, result|None)."""
+            track_id = track_dict["id"]
+            artist = track_dict.get("artist") or ""
+            album = track_dict.get("album") or ""
+            title = track_dict.get("title") or ""
+            is_flac = (track_dict.get("format") or "").lower() == "flac"
+            try:
                 result = asyncio.run(
                     search_for_flac(
                         artist=artist,
                         album=album,
                         title=title,
                         timeout_s=timeout_s,
+                        hi_res_only=is_flac,
                     )
                 )
-
-                if result:
-                    upgrade_search_status["found"] += 1
-                    with get_db() as db:
-                        db.execute(
-                            """UPDATE upgrade_queue
-                               SET status = 'found',
-                                   match_quality = ?,
-                                   slskd_search_id = ?,
-                                   slskd_username = ?,
-                                   slskd_filename = ?,
-                                   slskd_file_size = ?,
-                                   updated_at = CURRENT_TIMESTAMP
-                               WHERE id = ?""",
-                            (
-                                result["match_quality"],
-                                result["slskd_search_id"],
-                                result["username"],
-                                result["filename"],
-                                result["file_size"],
-                                queue_id,
-                            ),
-                        )
-                else:
-                    with get_db() as db:
-                        db.execute(
-                            """UPDATE upgrade_queue
-                               SET status = 'skipped',
-                                   updated_at = CURRENT_TIMESTAMP
-                               WHERE id = ?""",
-                            (queue_id,),
-                        )
-
+                return track_id, result
             except Exception as e:
-                logger.error(f"Search error for track {track_dict['id']} ({artist} - {title}): {e}")
-                upgrade_search_status["failed"] += 1
+                logger.error(f"Individual search error for track {track_id}: {e}")
+                return track_id, None
+
+        def _upsert_result(track_id: int, result: dict | None):
+            """Write search result to upgrade_queue and update status counters."""
+            queue_id = track_to_queue.get(track_id)
+            if queue_id is None:
+                return
+            if result:
+                with _counter_lock:
+                    upgrade_search_status["found"] += 1
                 with get_db() as db:
                     db.execute(
                         """UPDATE upgrade_queue
-                           SET status = 'failed',
-                               error_msg = ?,
+                           SET status = 'found',
+                               match_quality = ?,
+                               slskd_search_id = ?,
+                               slskd_username = ?,
+                               slskd_filename = ?,
+                               slskd_file_size = ?,
                                updated_at = CURRENT_TIMESTAMP
                            WHERE id = ?""",
-                        (str(e), queue_id),
+                        (
+                            result["match_quality"],
+                            result["slskd_search_id"],
+                            result["username"],
+                            result["filename"],
+                            result["file_size"],
+                            queue_id,
+                        ),
                     )
+            else:
+                with get_db() as db:
+                    db.execute(
+                        "UPDATE upgrade_queue SET status = 'skipped', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (queue_id,),
+                    )
+
+        # Submit album groups in parallel
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            # Album group futures
+            album_futures = {
+                pool.submit(_search_group, key, tracks): tracks
+                for key, tracks in grouped.items()
+            }
+            # Individual track futures
+            individual_futures = {
+                pool.submit(_search_individual, track): track
+                for track in individual
+            }
+            all_futures = {**album_futures, **individual_futures}
+
+            for future in as_completed(all_futures):
+                try:
+                    if future in album_futures:
+                        tracks_in_group = album_futures[future]
+                        group_results = future.result()  # dict[track_id → result|None]
+                        for track_dict in tracks_in_group:
+                            tid = track_dict["id"]
+                            _upsert_result(tid, group_results.get(tid))
+                            with _counter_lock:
+                                upgrade_search_status["searched"] += 1
+                    else:
+                        track_dict = individual_futures[future]
+                        tid, result = future.result()
+                        _upsert_result(tid, result)
+                        with _counter_lock:
+                            upgrade_search_status["searched"] += 1
+                except Exception as e:
+                    logger.error(f"Future result error: {e}")
+                    with _counter_lock:
+                        upgrade_search_status["failed"] += 1
+                finally:
+                    _broadcast_sync("job_update", dict(upgrade_search_status))
 
         if job_id:
             with get_db() as db:
@@ -282,7 +353,10 @@ def _run_download_worker():
         with get_db() as db:
             approved = db.execute(
                 """SELECT uq.*, t.file_path, t.artist, t.album, t.title,
-                          t.track_number, t.disc_number
+                          t.track_number, t.disc_number,
+                          t.format AS original_format,
+                          t.bit_depth AS original_bit_depth,
+                          t.sample_rate AS original_sample_rate
                    FROM upgrade_queue uq
                    JOIN tracks t ON uq.track_id = t.id
                    WHERE uq.status = 'approved'
@@ -386,6 +460,19 @@ def _run_download_worker():
 
                 # Read metadata from the newly placed FLAC
                 new_meta = read_track_metadata(new_library_path)
+
+                # Quality gate: if original was FLAC, verify the new file is actually better
+                if item_dict.get("original_format", "").lower() == "flac":
+                    orig_depth = item_dict.get("original_bit_depth") or 0
+                    orig_rate = item_dict.get("original_sample_rate") or 0
+                    new_depth = new_meta.get("bit_depth") or 0
+                    new_rate = new_meta.get("sample_rate") or 0
+                    if new_depth <= orig_depth and new_rate <= orig_rate:
+                        Path(new_library_path).unlink(missing_ok=True)
+                        raise ValueError(
+                            f"Downloaded FLAC not higher resolution than original "
+                            f"(orig {orig_depth}bit/{orig_rate}Hz, new {new_depth}bit/{new_rate}Hz)"
+                        )
 
                 # Database updates
                 from file_manager import trash_file as do_trash_file
@@ -494,17 +581,29 @@ def _run_download_worker():
 
 @router.get("")
 @router.get("/")
-def list_upgrades():
-    """Return all upgrade queue items with track metadata."""
+def list_upgrades(status: str | None = None):
+    """Return upgrade queue items with track metadata. Optionally filter by status."""
     with get_db() as db:
-        rows = db.execute(
-            """SELECT uq.id, uq.track_id, uq.status, uq.match_quality,
-                      uq.staging_path, uq.created_at, uq.updated_at, uq.error_msg,
-                      t.artist, t.album, t.title, t.format, t.bitrate
-               FROM upgrade_queue uq
-               JOIN tracks t ON uq.track_id = t.id
-               ORDER BY uq.created_at DESC"""
-        ).fetchall()
+        if status:
+            rows = db.execute(
+                """SELECT uq.id, uq.track_id, uq.status, uq.match_quality,
+                          uq.staging_path, uq.created_at, uq.updated_at, uq.error_msg,
+                          t.artist, t.album, t.title, t.format, t.bitrate
+                   FROM upgrade_queue uq
+                   JOIN tracks t ON uq.track_id = t.id
+                   WHERE uq.status = ?
+                   ORDER BY uq.created_at DESC""",
+                (status,),
+            ).fetchall()
+        else:
+            rows = db.execute(
+                """SELECT uq.id, uq.track_id, uq.status, uq.match_quality,
+                          uq.staging_path, uq.created_at, uq.updated_at, uq.error_msg,
+                          t.artist, t.album, t.title, t.format, t.bitrate
+                   FROM upgrade_queue uq
+                   JOIN tracks t ON uq.track_id = t.id
+                   ORDER BY uq.created_at DESC"""
+            ).fetchall()
     return [dict(r) for r in rows]
 
 

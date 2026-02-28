@@ -1,6 +1,6 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
-import { ArrowUpCircle, Search, Download, CheckCircle, XCircle, Loader2, Server, HardDrive, PackageCheck } from 'lucide-react'
+import { ArrowUpCircle, Search, Download, CheckCircle, XCircle, Loader2, Server, HardDrive, PackageCheck, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react'
 import { GlassCard, StatCard, Button, Badge, ProgressBar, EmptyState, SkeletonTable, toast } from '../components/ui'
 import { useUpgradeStatus } from '../hooks/useUpgradeStatus'
 
@@ -9,7 +9,7 @@ interface QueueItem {
   track_id: number
   search_query: string
   status: string
-  match_type: string | null
+  match_quality: string | null
   created_at: string
   artist: string
   title: string
@@ -18,11 +18,17 @@ interface QueueItem {
   bitrate: number
 }
 
-type FilterTab = 'all' | 'pending' | 'approved' | 'completed' | 'skipped'
+type FilterTab = 'all' | 'found' | 'approved' | 'completed' | 'skipped'
+type SortCol = 'artist' | 'album' | 'title' | 'format' | 'match_quality' | 'status' | 'actions'
+type SortDir = 'asc' | 'desc'
+
+const STATUS_RANK: Record<string, number> = {
+  found: 0, pending: 0, approved: 1, downloading: 2, completed: 3, searching: 4, skipped: 5, failed: 6,
+}
 
 const matchVariant = (m: string | null) => {
-  if (m === 'exact') return 'green' as const
-  if (m === 'fuzzy') return 'amber' as const
+  if (m === 'hi_res') return 'green' as const
+  if (m === 'lossless') return 'blue' as const
   return 'default' as const
 }
 
@@ -42,9 +48,38 @@ export default function Upgrades() {
   const [recentlyApproved, setRecentlyApproved] = useState<Set<number>>(new Set())
   const [downloadRequested, setDownloadRequested] = useState(false)
   const [searchRequested, setSearchRequested] = useState(false)
+  const [sortCol, setSortCol] = useState<SortCol>('actions')
+  const [sortDir, setSortDir] = useState<SortDir>('asc')
 
   const { status: upgradeStatus } = useUpgradeStatus()
   const prevPhaseRef = useRef(upgradeStatus.phase)
+
+  const handleSort = (col: SortCol) => {
+    if (col === sortCol) {
+      setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortCol(col)
+      setSortDir('asc')
+    }
+  }
+
+  const sortedQueue = useMemo(() => {
+    const q = [...queue]
+    q.sort((a, b) => {
+      let cmp = 0
+      if (sortCol === 'actions') {
+        cmp = (STATUS_RANK[a.status] ?? 9) - (STATUS_RANK[b.status] ?? 9)
+      } else if (sortCol === 'format') {
+        cmp = `${a.format}${a.bitrate}`.localeCompare(`${b.format}${b.bitrate}`)
+      } else {
+        const av = (a[sortCol] ?? '') as string
+        const bv = (b[sortCol] ?? '') as string
+        cmp = av.localeCompare(bv)
+      }
+      return sortDir === 'asc' ? cmp : -cmp
+    })
+    return q
+  }, [queue, sortCol, sortDir])
 
   const isDownloading = (upgradeStatus.phase === 'downloading' && upgradeStatus.running) || downloadRequested
   const isSearching = (upgradeStatus.phase === 'searching' && upgradeStatus.running) || searchRequested
@@ -53,7 +88,7 @@ export default function Upgrades() {
     setLoading(true)
     try {
       const params = filterTab === 'all' ? '' : `?status=${filterTab}`
-      const res = await fetch(`/api/upgrades/queue${params}`)
+      const res = await fetch(`/api/upgrades${params}`)
       const data: QueueItem[] = await res.json()
       setQueue(data)
     } catch {
@@ -111,7 +146,7 @@ export default function Upgrades() {
   const handleScan = async () => {
     setSearchRequested(true)
     try {
-      await fetch('/api/upgrades/scan', { method: 'POST' })
+      await fetch('/api/upgrades/search', { method: 'POST' })
       toast.success('Search started')
     } catch {
       setSearchRequested(false)
@@ -122,7 +157,7 @@ export default function Upgrades() {
   const handleApprove = async (id: number, artist: string, title: string) => {
     setActionInProgress(prev => new Set(prev).add(id))
     try {
-      const res = await fetch(`/api/upgrades/queue/${id}/approve`, { method: 'POST' })
+      const res = await fetch(`/api/upgrades/${id}/approve`, { method: 'POST' })
       const data = await res.json()
       if (data.error) {
         toast.error(data.error)
@@ -144,7 +179,7 @@ export default function Upgrades() {
   const handleSkip = async (id: number, artist: string, title: string) => {
     setActionInProgress(prev => new Set(prev).add(id))
     try {
-      await fetch(`/api/upgrades/queue/${id}/skip`, { method: 'POST' })
+      await fetch(`/api/upgrades/${id}/skip`, { method: 'POST' })
       setQueue(prev => prev.filter(item => item.id !== id))
       toast(`Skipped: ${artist} - ${title}`, { icon: '⏭' })
     } catch {
@@ -155,15 +190,15 @@ export default function Upgrades() {
   }
 
   const handleApproveAllExact = async () => {
-    const count = exactPendingCount
+    const count = foundCount
     try {
-      await fetch('/api/upgrades/approve-all-exact', { method: 'POST' })
+      await fetch('/api/upgrades/approve-all', { method: 'POST' })
       setQueue(prev => prev.map(item =>
-        item.match_type === 'exact' && item.status === 'pending'
+        (item.status === 'found' || item.status === 'pending')
           ? { ...item, status: 'approved' }
           : item
       ))
-      toast.success(`Approved ${count} exact matches`)
+      toast.success(`Approved ${count} found upgrades`)
     } catch {
       toast.error('Failed to approve all exact')
     }
@@ -172,7 +207,7 @@ export default function Upgrades() {
   const handleDownloadApproved = async () => {
     setDownloadRequested(true)
     try {
-      const res = await fetch('/api/upgrades/download-approved', { method: 'POST' })
+      const res = await fetch('/api/upgrades/download', { method: 'POST' })
       const data = await res.json()
       if (data.error) {
         setDownloadRequested(false)
@@ -187,13 +222,13 @@ export default function Upgrades() {
   }
 
   const totalCandidates = queue.length
-  const exactMatches = queue.filter(i => i.match_type === 'exact').length
+  const hiResMatches = queue.filter(i => i.match_quality === 'hi_res').length
   const approvedCount = queue.filter(i => i.status === 'approved').length
-  const exactPendingCount = queue.filter(i => i.match_type === 'exact' && i.status === 'pending').length
+  const foundCount = queue.filter(i => i.status === 'found' || i.status === 'pending').length
 
   const tabs: { key: FilterTab; label: string; count: number }[] = [
     { key: 'all', label: 'All', count: queue.length },
-    { key: 'pending', label: 'Pending', count: queue.filter(i => i.status === 'pending').length },
+    { key: 'found', label: 'Found', count: foundCount },
     { key: 'approved', label: 'Approved', count: approvedCount },
     { key: 'completed', label: 'Completed', count: queue.filter(i => i.status === 'completed').length },
     { key: 'skipped', label: 'Skipped', count: queue.filter(i => i.status === 'skipped').length },
@@ -214,10 +249,10 @@ export default function Upgrades() {
               Download Approved ({approvedCount})
             </button>
           )}
-          {exactPendingCount > 0 && (
+          {foundCount > 0 && (
             <Button variant="secondary" onClick={handleApproveAllExact}>
               <CheckCircle className="w-4 h-4" />
-              Approve All Exact ({exactPendingCount})
+              Approve All Found ({foundCount})
             </Button>
           )}
           <button
@@ -350,7 +385,7 @@ export default function Upgrades() {
 
       <div className="grid grid-cols-3 gap-4">
         <StatCard icon={ArrowUpCircle} label="Candidates" value={totalCandidates.toLocaleString()} />
-        <StatCard icon={CheckCircle} label="Exact Matches" value={exactMatches.toLocaleString()} />
+        <StatCard icon={CheckCircle} label="Hi-Res Found" value={hiResMatches.toLocaleString()} />
         <StatCard icon={Download} label="Approved" value={approvedCount.toLocaleString()} />
       </div>
 
@@ -390,20 +425,40 @@ export default function Upgrades() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-glass-border text-base-400 text-left">
-                  <th className="px-4 py-3 font-medium">Artist</th>
-                  <th className="px-4 py-3 font-medium">Album</th>
-                  <th className="px-4 py-3 font-medium">Title</th>
-                  <th className="px-4 py-3 font-medium">Format</th>
-                  <th className="px-4 py-3 font-medium text-center">Match</th>
-                  <th className="px-4 py-3 font-medium text-center">Status</th>
-                  <th className="px-4 py-3 font-medium text-right">Actions</th>
+                  {(
+                    [
+                      { col: 'artist' as SortCol, label: 'Artist', align: 'left' },
+                      { col: 'album' as SortCol, label: 'Album', align: 'left' },
+                      { col: 'title' as SortCol, label: 'Title', align: 'left' },
+                      { col: 'format' as SortCol, label: 'Format', align: 'left' },
+                      { col: 'match_quality' as SortCol, label: 'Match', align: 'center' },
+                      { col: 'status' as SortCol, label: 'Status', align: 'center' },
+                      { col: 'actions' as SortCol, label: 'Actions', align: 'right' },
+                    ] as const
+                  ).map(({ col, label, align }) => {
+                    const active = sortCol === col
+                    const Icon = active ? (sortDir === 'asc' ? ChevronUp : ChevronDown) : ChevronsUpDown
+                    return (
+                      <th
+                        key={col}
+                        onClick={() => handleSort(col)}
+                        className={`px-4 py-3 font-medium cursor-pointer select-none hover:text-base-200 transition-colors duration-150 ${align === 'center' ? 'text-center' : align === 'right' ? 'text-right' : ''}`}
+                      >
+                        <span className={`inline-flex items-center gap-1 ${align === 'center' ? 'justify-center' : align === 'right' ? 'justify-end' : ''}`}>
+                          {align === 'right' && <Icon className={`w-3.5 h-3.5 ${active ? 'text-lime' : 'text-base-600'}`} />}
+                          <span className={active ? 'text-lime' : ''}>{label}</span>
+                          {align !== 'right' && <Icon className={`w-3.5 h-3.5 ${active ? 'text-lime' : 'text-base-600'}`} />}
+                        </span>
+                      </th>
+                    )
+                  })}
                 </tr>
               </thead>
               <AnimatePresence>
                 <tbody>
-                  {queue.map(item => {
+                  {sortedQueue.map(item => {
                     const busy = actionInProgress.has(item.id)
-                    const canAct = item.status === 'pending'
+                    const canAct = item.status === 'found' || item.status === 'pending'
                     const justApproved = recentlyApproved.has(item.id)
                     return (
                       <motion.tr
@@ -425,7 +480,10 @@ export default function Upgrades() {
                           <span className="bg-base-700/80 px-1.5 py-0.5 rounded-md border border-base-600/50 shadow-sm">{item.format} {item.bitrate > 0 ? `${item.bitrate}k` : ''}</span>
                         </td>
                         <td className="px-4 py-3 text-center">
-                          <Badge variant={matchVariant(item.match_type)}>{item.match_type ?? 'pending'}</Badge>
+                          {item.match_quality
+                            ? <Badge variant={matchVariant(item.match_quality)}>{item.match_quality}</Badge>
+                            : <span className="text-base-600 text-xs">—</span>
+                          }
                         </td>
                         <td className="px-4 py-3 text-center">
                           <Badge variant={statusVariant(item.status)}>{item.status}</Badge>
