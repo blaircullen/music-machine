@@ -50,6 +50,8 @@ export default function Upgrades() {
   const [searchRequested, setSearchRequested] = useState(false)
   const [sortCol, setSortCol] = useState<SortCol>('actions')
   const [sortDir, setSortDir] = useState<SortDir>('asc')
+  const [reviewMode, setReviewMode] = useState(false)
+  const [reviewIndex, setReviewIndex] = useState(0)
 
   const [coverage, setCoverage] = useState<{
     total_candidates: number
@@ -231,7 +233,7 @@ export default function Upgrades() {
     }
   }
 
-  const handleApprove = async (id: number, artist: string, title: string) => {
+  const handleApprove = useCallback(async (id: number, artist: string, title: string) => {
     setActionInProgress(prev => new Set(prev).add(id))
     try {
       const res = await fetch(`/api/upgrades/${id}/approve`, { method: 'POST' })
@@ -251,9 +253,9 @@ export default function Upgrades() {
     } finally {
       setActionInProgress(prev => { const next = new Set(prev); next.delete(id); return next })
     }
-  }
+  }, [])
 
-  const handleSkip = async (id: number, artist: string, title: string) => {
+  const handleSkip = useCallback(async (id: number, artist: string, title: string) => {
     setActionInProgress(prev => new Set(prev).add(id))
     try {
       await fetch(`/api/upgrades/${id}/skip`, { method: 'POST' })
@@ -263,6 +265,22 @@ export default function Upgrades() {
       toast.error('Failed to skip')
     } finally {
       setActionInProgress(prev => { const next = new Set(prev); next.delete(id); return next })
+    }
+  }, [])
+
+  const handleApproveHiRes = async () => {
+    try {
+      const res = await fetch('/api/upgrades/approve-hi-res', { method: 'POST' })
+      if (!res.ok) return
+      const data = await res.json()
+      setQueue(prev => prev.map(item =>
+        item.status === 'found' && item.match_quality === 'hi_res'
+          ? { ...item, status: 'approved' }
+          : item
+      ))
+      toast.success(`Approved ${data.approved} hi-res match${data.approved === 1 ? '' : 'es'}`)
+    } catch {
+      toast.error('Failed to approve hi-res')
     }
   }
 
@@ -302,6 +320,46 @@ export default function Upgrades() {
   const hiResMatches = queue.filter(i => i.match_quality === 'hi_res').length
   const approvedCount = queue.filter(i => i.status === 'approved').length
   const foundCount = queue.filter(i => i.status === 'found' || i.status === 'pending').length
+
+  const foundItems = useMemo(
+    () => sortedQueue.filter(i => i.status === 'found' || i.status === 'pending'),
+    [sortedQueue]
+  )
+  const reviewItem = foundItems[reviewIndex] ?? null
+
+  // Clamp reviewIndex whenever foundItems shrinks
+  useEffect(() => {
+    if (foundItems.length > 0) {
+      setReviewIndex(i => Math.min(i, foundItems.length - 1))
+    }
+  }, [foundItems.length])
+
+  useEffect(() => {
+    if (!reviewMode) return
+    const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement).tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (e.key === 'a' || e.key === 'A' || e.key === ' ') {
+        e.preventDefault()
+        if (reviewItem && !actionInProgress.has(reviewItem.id)) {
+          handleApprove(reviewItem.id, reviewItem.artist, reviewItem.title)
+          setReviewIndex(i => i + 1)
+        }
+      }
+      if (e.key === 's' || e.key === 'S' || e.key === 'x' || e.key === 'X') {
+        e.preventDefault()
+        if (reviewItem && !actionInProgress.has(reviewItem.id)) {
+          handleSkip(reviewItem.id, reviewItem.artist, reviewItem.title)
+          setReviewIndex(i => i + 1)
+        }
+      }
+      if (e.key === 'ArrowRight') setReviewIndex(i => Math.min(i + 1, foundItems.length - 1))
+      if (e.key === 'ArrowLeft') setReviewIndex(i => Math.max(i - 1, 0))
+      if (e.key === 'Escape') setReviewMode(false)
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [reviewMode, reviewItem, foundItems.length, actionInProgress, handleApprove, handleSkip])
 
   const tabs: { key: FilterTab; label: string; count: number }[] = [
     { key: 'all', label: 'All', count: queue.length },
@@ -488,26 +546,48 @@ export default function Upgrades() {
         <StatCard icon={Download} label="Approved" value={approvedCount.toLocaleString()} />
       </div>
 
-      <div className="flex gap-2">
-        {tabs.map(tab => (
-          <button
-            key={tab.key}
-            onClick={() => setFilterTab(tab.key)}
-            className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all duration-300 flex items-center gap-2 relative ${filterTab === tab.key
-                ? 'text-lime drop-shadow-[0_0_8px_rgba(16,185,129,0.5)]'
-                : 'text-base-500 hover:text-base-300 hover:bg-base-700/50'
+      <div className="flex items-center gap-2">
+        <div className="flex gap-2">
+          {tabs.map(tab => (
+            <button
+              key={tab.key}
+              onClick={() => setFilterTab(tab.key)}
+              className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all duration-300 flex items-center gap-2 relative ${filterTab === tab.key
+                  ? 'text-lime drop-shadow-[0_0_8px_rgba(16,185,129,0.5)]'
+                  : 'text-base-500 hover:text-base-300 hover:bg-base-700/50'
+                }`}
+            >
+              {tab.label}
+              {tab.count > 0 && (
+                <span className={`text-xs px-1.5 py-0.5 rounded-md ${filterTab === tab.key ? 'bg-lime/20 text-lime font-bold' : 'bg-base-800/80'}`}>{tab.count}</span>
+              )}
+              {/* Active Indiciator Line */}
+              {filterTab === tab.key && (
+                <motion.div layoutId="activeTabIndicator" className="absolute -bottom-1 left-3 right-3 h-0.5 bg-lime rounded-full shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
+              )}
+            </button>
+          ))}
+        </div>
+        {filterTab === 'found' && foundItems.length > 0 && (
+          <div className="flex items-center gap-2 ml-auto">
+            <button
+              onClick={handleApproveHiRes}
+              className="px-3 py-1.5 rounded-lg text-sm font-medium bg-green-900/40 text-green-400 border border-green-800/50 hover:bg-green-900/60 transition-all"
+            >
+              Approve all hi-res
+            </button>
+            <button
+              onClick={() => { setReviewMode(m => !m); setReviewIndex(0) }}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${
+                reviewMode
+                  ? 'bg-lime/20 border-lime/40 text-lime'
+                  : 'bg-base-700 border-base-600 text-base-400 hover:text-base-200'
               }`}
-          >
-            {tab.label}
-            {tab.count > 0 && (
-              <span className={`text-xs px-1.5 py-0.5 rounded-md ${filterTab === tab.key ? 'bg-lime/20 text-lime font-bold' : 'bg-base-800/80'}`}>{tab.count}</span>
-            )}
-            {/* Active Indiciator Line */}
-            {filterTab === tab.key && (
-              <motion.div layoutId="activeTabIndicator" className="absolute -bottom-1 left-3 right-3 h-0.5 bg-lime rounded-full shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
-            )}
-          </button>
-        ))}
+            >
+              {reviewMode ? 'Exit Review' : 'Review Mode'}
+            </button>
+          </div>
+        )}
       </div>
 
       {loading ? (
@@ -559,6 +639,71 @@ export default function Upgrades() {
               </table>
             </div>
           </GlassCard>
+        )
+      ) : filterTab === 'found' && reviewMode ? (
+        foundItems.length === 0 ? (
+          <EmptyState icon={CheckCircle} title="All reviewed" description="No more found items to review." />
+        ) : (
+          <div className="flex flex-col items-center gap-6">
+            <p className="text-sm text-base-500">
+              {reviewIndex + 1} of {foundItems.length} found
+              <span className="ml-3 text-xs text-base-600">A/Space = approve · S/X = skip · ← → navigate · Esc = exit</span>
+            </p>
+
+            {reviewItem && (
+              <GlassCard className="w-full max-w-2xl p-8">
+                <div className="mb-1 text-base-400 text-sm font-medium">{reviewItem.artist || '—'}</div>
+                <div className="text-xl font-bold text-base-100 mb-1">{reviewItem.album || '—'}</div>
+                <div className="text-base-300 text-lg mb-6">{reviewItem.title || '—'}</div>
+
+                <div className="flex gap-8 mb-8">
+                  <div>
+                    <p className="text-xs text-base-500 uppercase tracking-wider mb-1">Current</p>
+                    <span className="font-mono text-sm bg-base-700/80 px-2 py-1 rounded-lg border border-base-600/50 uppercase">
+                      {reviewItem.format} {reviewItem.bitrate > 0 ? `${reviewItem.bitrate}k` : ''}
+                    </span>
+                  </div>
+                  <div className="text-base-500 self-end mb-2">→</div>
+                  <div>
+                    <p className="text-xs text-base-500 uppercase tracking-wider mb-1">Match</p>
+                    <Badge variant={matchVariant(reviewItem.match_quality)}>
+                      {reviewItem.match_quality ?? 'unknown'}
+                    </Badge>
+                  </div>
+                </div>
+
+                <div className="flex gap-4">
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      handleSkip(reviewItem.id, reviewItem.artist, reviewItem.title)
+                      setReviewIndex(i => i + 1)  // clamp effect will handle boundary
+                    }}
+                    disabled={actionInProgress.has(reviewItem.id)}
+                  >
+                    <XCircle className="w-4 h-4" />
+                    Skip (S)
+                  </Button>
+                  <Button
+                    variant="primary"
+                    onClick={() => {
+                      handleApprove(reviewItem.id, reviewItem.artist, reviewItem.title)
+                      setReviewIndex(i => i + 1)  // clamp effect will handle boundary
+                    }}
+                    disabled={actionInProgress.has(reviewItem.id)}
+                  >
+                    <CheckCircle className="w-4 h-4" />
+                    Approve (A)
+                  </Button>
+                </div>
+              </GlassCard>
+            )}
+
+            <div className="flex gap-4">
+              <Button variant="secondary" onClick={() => setReviewIndex(i => Math.max(i - 1, 0))} disabled={reviewIndex === 0}>← Prev</Button>
+              <Button variant="secondary" onClick={() => setReviewIndex(i => Math.min(i + 1, foundItems.length - 1))} disabled={reviewIndex >= foundItems.length - 1}>Next →</Button>
+            </div>
+          </div>
         )
       ) : queue.length === 0 ? (
         <EmptyState
