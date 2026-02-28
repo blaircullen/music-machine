@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   ChevronRight,
@@ -14,6 +14,9 @@ import {
   Server,
   HardDrive,
   PackageCheck,
+  ChevronUp,
+  ChevronDown,
+  ChevronsUpDown,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { Button } from '../components/ui/Button'
@@ -342,6 +345,15 @@ function UpgradesTab() {
   const [upgradeStatus, setUpgradeStatus] = useState<UpgradeStatus | null>(null)
   const [inFlight, setInFlight] = useState<Set<number>>(new Set())
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [sortCol, setSortCol] = useState<'artist' | 'album' | 'title' | 'format' | 'match_quality' | 'status' | 'actions'>('actions')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
+
+  const STATUS_RANK: Record<string, number> = { found: 0, pending: 0, approved: 1, downloading: 2, completed: 3, searching: 4, skipped: 5, failed: 6 }
+
+  const handleUpgradeSort = (col: typeof sortCol) => {
+    if (col === sortCol) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    else { setSortCol(col); setSortDir('asc') }
+  }
 
   const fetchUpgrades = useCallback(async () => {
     try {
@@ -374,9 +386,19 @@ function UpgradesTab() {
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [fetchUpgrades, pollStatus])
 
-  const filtered = upgrades.filter((u) => filter === 'all' || u.status === filter)
+  const filtered = useMemo(() => {
+    const f = upgrades.filter((u) => filter === 'all' || u.status === filter)
+    f.sort((a, b) => {
+      let cmp = 0
+      if (sortCol === 'actions') cmp = (STATUS_RANK[a.status] ?? 9) - (STATUS_RANK[b.status] ?? 9)
+      else if (sortCol === 'format') cmp = a.format.localeCompare(b.format)
+      else cmp = ((a[sortCol as keyof typeof a] as string) ?? '').localeCompare((b[sortCol as keyof typeof b] as string) ?? '')
+      return sortDir === 'asc' ? cmp : -cmp
+    })
+    return f
+  }, [upgrades, filter, sortCol, sortDir])
 
-  const pendingCount = upgrades.filter((u) => u.status === 'pending').length
+  const pendingCount = upgrades.filter((u) => u.status === 'pending' || u.status === 'found').length
   const approvedCount = upgrades.filter((u) => u.status === 'approved').length
 
   const isSearching = upgradeStatus?.running && upgradeStatus.phase === 'searching'
@@ -638,13 +660,31 @@ function UpgradesTab() {
           <table className="w-full text-sm table-fixed">
             <thead>
               <tr className="border-b border-[#2a2d3a] text-xs text-slate-500 uppercase tracking-wide">
-                <th className="px-4 py-3 text-left font-medium w-[18%]">Artist</th>
-                <th className="px-4 py-3 text-left font-medium w-[18%]">Album</th>
-                <th className="px-4 py-3 text-left font-medium">Title</th>
-                <th className="px-4 py-3 text-left font-medium w-[8%]">Format</th>
-                <th className="px-4 py-3 text-center font-medium w-[8%]">Match</th>
-                <th className="px-4 py-3 text-center font-medium w-[9%]">Status</th>
-                <th className="px-4 py-3 text-right font-medium w-[12%]">Actions</th>
+                {([
+                  { col: 'artist', label: 'Artist', align: 'left', w: 'w-[18%]' },
+                  { col: 'album', label: 'Album', align: 'left', w: 'w-[18%]' },
+                  { col: 'title', label: 'Title', align: 'left', w: '' },
+                  { col: 'format', label: 'Format', align: 'left', w: 'w-[8%]' },
+                  { col: 'match_quality', label: 'Match', align: 'center', w: 'w-[8%]' },
+                  { col: 'status', label: 'Status', align: 'center', w: 'w-[9%]' },
+                  { col: 'actions', label: 'Actions', align: 'right', w: 'w-[12%]' },
+                ] as const).map(({ col, label, align, w }) => {
+                  const active = sortCol === col
+                  const Icon = active ? (sortDir === 'asc' ? ChevronUp : ChevronDown) : ChevronsUpDown
+                  return (
+                    <th
+                      key={col}
+                      onClick={() => handleUpgradeSort(col)}
+                      className={`px-4 py-3 font-medium cursor-pointer select-none hover:text-slate-300 transition-colors ${w} ${align === 'center' ? 'text-center' : align === 'right' ? 'text-right' : 'text-left'}`}
+                    >
+                      <span className={`inline-flex items-center gap-1 ${align === 'center' ? 'justify-center' : align === 'right' ? 'justify-end' : ''}`}>
+                        {align === 'right' && <Icon className={`w-3 h-3 ${active ? 'text-[#4ade80]' : 'text-slate-600'}`} />}
+                        <span className={active ? 'text-[#4ade80]' : ''}>{label}</span>
+                        {align !== 'right' && <Icon className={`w-3 h-3 ${active ? 'text-[#4ade80]' : 'text-slate-600'}`} />}
+                      </span>
+                    </th>
+                  )
+                })}
               </tr>
             </thead>
             <tbody>
