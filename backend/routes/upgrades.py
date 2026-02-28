@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from database import get_db
 from file_manager import compute_sha256, import_flac
@@ -17,6 +18,13 @@ from ws_manager import manager
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/upgrades", tags=["upgrades"])
+
+
+class ScanScope(BaseModel):
+    format_filter: str = "all_lossy"   # "all_lossy" | "mp3" | "aac" | "m4a" | "ogg" | "wma" | "opus" | "cd_flac"
+    unscanned_only: bool = True
+    batch_size: int = 50               # max album groups per run (0 = no limit)
+    artist_filter: str | None = None   # partial match on artist name
 
 LOSSY_FORMATS = {"mp3", "aac", "m4a", "ogg", "wma", "opus"}
 _counter_lock = threading.Lock()
@@ -71,7 +79,12 @@ def _get_setting(key: str, default: str) -> str:
         return default
 
 
-def _run_upgrade_search_worker():
+def _run_upgrade_search_worker(
+    format_filter: str = "all_lossy",
+    unscanned_only: bool = True,
+    batch_size: int = 50,
+    artist_filter: str | None = None,
+):
     """
     Background thread: search slskd for FLAC upgrades of pending lossy and CD-quality FLAC tracks.
     Uses album-level parallel searching to reduce search time and API calls.
@@ -91,7 +104,6 @@ def _run_upgrade_search_worker():
         logger.error(f"Failed to create upgrade_search job: {e}")
 
     timeout_s = int(_get_setting("slskd_search_timeout_s", "15"))
-    scan_limit = int(_get_setting("upgrade_scan_limit", "0"))
     concurrency = int(_get_setting("upgrade_concurrency", "8"))
 
     upgrade_search_status.update({
@@ -106,25 +118,43 @@ def _run_upgrade_search_worker():
     _broadcast_sync("job_update", dict(upgrade_search_status))
 
     try:
-        # Fetch candidates: lossy tracks + CD-quality FLAC tracks (bit_depth <= 16)
-        with get_db() as db:
+        # Build format filter
+        if format_filter == "cd_flac":
+            fmt_clause = "t.format = 'flac' AND (t.bit_depth IS NULL OR t.bit_depth <= 16)"
+            params = []
+        elif format_filter == "all_lossy":
             lossy_placeholders = ",".join("?" * len(LOSSY_FORMATS))
-            query = f"""
-                SELECT t.* FROM tracks t
-                WHERE (
-                    t.format IN ({lossy_placeholders})
-                    OR (t.format = 'flac' AND (t.bit_depth IS NULL OR t.bit_depth <= 16))
-                )
-                AND t.status = 'active'
+            fmt_clause = f"t.format IN ({lossy_placeholders})"
+            params = list(LOSSY_FORMATS)
+        else:
+            # Specific lossy format (mp3, aac, etc.)
+            fmt_clause = "t.format = ?"
+            params = [format_filter]
+
+        unscanned_clause = ""
+        if unscanned_only:
+            unscanned_clause = """
                 AND t.id NOT IN (
                     SELECT track_id FROM upgrade_queue
                     WHERE status NOT IN ('failed', 'skipped')
                 )
-                ORDER BY t.artist, t.album, t.track_number
             """
-            params = list(LOSSY_FORMATS)
-            if scan_limit > 0:
-                query += f" LIMIT {scan_limit}"
+
+        artist_clause = ""
+        if artist_filter:
+            artist_clause = "AND LOWER(t.artist) LIKE ?"
+            params.append(f"%{artist_filter.lower()}%")
+
+        query = f"""
+            SELECT t.* FROM tracks t
+            WHERE ({fmt_clause})
+            AND t.status = 'active'
+            {unscanned_clause}
+            {artist_clause}
+            ORDER BY t.artist, t.album, t.track_number
+        """
+
+        with get_db() as db:
             candidates = db.execute(query, params).fetchall()
 
         total = len(candidates)
@@ -175,6 +205,13 @@ def _run_upgrade_search_worker():
             f"Upgrade search: {len(grouped)} album groups, "
             f"{len(individual)} individual (no-album) tracks"
         )
+
+        # Apply batch_size limit
+        if batch_size > 0:
+            group_keys = list(grouped.keys())[:batch_size]
+            grouped = {k: grouped[k] for k in group_keys}
+            remaining = max(0, batch_size - len(grouped))
+            individual = individual[:remaining]
 
         from upgrade_service import search_album, search_for_flac
 
@@ -608,12 +645,22 @@ def list_upgrades(status: str | None = None):
 
 
 @router.post("/search")
-def start_upgrade_search():
-    """Start a background slskd search for FLAC upgrades of all lossy tracks."""
+def start_upgrade_search(scope: ScanScope | None = None):
+    """Start a scoped background slskd search for FLAC upgrades."""
     if upgrade_search_status["running"]:
         return {"ok": False, "error": "Upgrade search already in progress"}
 
-    t = threading.Thread(target=_run_upgrade_search_worker, daemon=True)
+    s = scope or ScanScope()
+    t = threading.Thread(
+        target=_run_upgrade_search_worker,
+        kwargs={
+            "format_filter": s.format_filter,
+            "unscanned_only": s.unscanned_only,
+            "batch_size": s.batch_size,
+            "artist_filter": s.artist_filter,
+        },
+        daemon=True,
+    )
     t.start()
     return {"ok": True}
 
