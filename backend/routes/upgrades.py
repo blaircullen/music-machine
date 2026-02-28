@@ -703,6 +703,80 @@ def get_upgrade_status():
     }
 
 
+@router.get("/coverage")
+def get_coverage():
+    """Return scan coverage counts across the library."""
+    with get_db() as db:
+        lossy_placeholders = ",".join("?" * len(LOSSY_FORMATS))
+        total = db.execute(
+            f"""SELECT COUNT(*) FROM tracks
+                WHERE (format IN ({lossy_placeholders})
+                       OR (format = 'flac' AND (bit_depth IS NULL OR bit_depth <= 16)))
+                AND status = 'active'""",
+            list(LOSSY_FORMATS),
+        ).fetchone()[0]
+
+        scanned = db.execute(
+            """SELECT COUNT(DISTINCT track_id) FROM upgrade_queue
+               WHERE status NOT IN ('failed', 'skipped')"""
+        ).fetchone()[0]
+
+        found = db.execute(
+            "SELECT COUNT(*) FROM upgrade_queue WHERE status = 'found'"
+        ).fetchone()[0]
+
+        completed = db.execute(
+            "SELECT COUNT(*) FROM upgrade_queue WHERE status = 'completed'"
+        ).fetchone()[0]
+
+    return {
+        "total_candidates": total,
+        "scanned": scanned,
+        "unscanned": max(0, total - scanned),
+        "found": found,
+        "completed": completed,
+    }
+
+
+@router.get("/unscanned")
+def list_unscanned(limit: int = 500):
+    """Return active lossy/CD-FLAC tracks that have never been searched."""
+    with get_db() as db:
+        lossy_placeholders = ",".join("?" * len(LOSSY_FORMATS))
+        rows = db.execute(
+            f"""SELECT t.id AS track_id, t.artist, t.album, t.title,
+                       t.format, t.bitrate, t.bit_depth, t.sample_rate
+                FROM tracks t
+                LEFT JOIN upgrade_queue uq ON uq.track_id = t.id
+                    AND uq.status NOT IN ('failed', 'skipped')
+                WHERE (
+                    t.format IN ({lossy_placeholders})
+                    OR (t.format = 'flac' AND (t.bit_depth IS NULL OR t.bit_depth <= 16))
+                )
+                AND t.status = 'active'
+                AND uq.track_id IS NULL
+                ORDER BY t.artist, t.album, t.track_number
+                LIMIT ?""",
+            list(LOSSY_FORMATS) + [limit],
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@router.post("/approve-hi-res")
+def approve_hi_res_upgrades():
+    """Approve only hi-res quality found items (match_quality = 'hi_res')."""
+    with get_db() as db:
+        result = db.execute(
+            """UPDATE upgrade_queue
+               SET status = 'approved', updated_at = CURRENT_TIMESTAMP
+               WHERE status = 'found'
+                 AND match_quality = 'hi_res'
+                 AND slskd_username IS NOT NULL
+                 AND slskd_filename IS NOT NULL"""
+        )
+    return {"ok": True, "approved": result.rowcount}
+
+
 @router.post("/{item_id}/approve")
 def approve_upgrade(item_id: int):
     """Mark an upgrade queue item as approved for download."""
