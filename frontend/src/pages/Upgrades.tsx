@@ -18,7 +18,7 @@ interface QueueItem {
   bitrate: number
 }
 
-type FilterTab = 'all' | 'found' | 'approved' | 'completed' | 'skipped'
+type FilterTab = 'all' | 'found' | 'approved' | 'completed' | 'skipped' | 'unscanned'
 type SortCol = 'artist' | 'album' | 'title' | 'format' | 'match_quality' | 'status' | 'actions'
 type SortDir = 'asc' | 'desc'
 
@@ -50,6 +50,23 @@ export default function Upgrades() {
   const [searchRequested, setSearchRequested] = useState(false)
   const [sortCol, setSortCol] = useState<SortCol>('actions')
   const [sortDir, setSortDir] = useState<SortDir>('asc')
+
+  const [coverage, setCoverage] = useState<{
+    total_candidates: number
+    scanned: number
+    unscanned: number
+    found: number
+    completed: number
+  } | null>(null)
+
+  const [unscannedTracks, setUnscannedTracks] = useState<Array<{
+    track_id: number
+    artist: string
+    album: string
+    title: string
+    format: string
+    bitrate: number
+  }>>([])
 
   const [scanModalOpen, setScanModalOpen] = useState(false)
   const [scanScope, setScanScope] = useState({
@@ -92,6 +109,22 @@ export default function Upgrades() {
   const isDownloading = (upgradeStatus.phase === 'downloading' && upgradeStatus.running) || downloadRequested
   const isSearching = (upgradeStatus.phase === 'searching' && upgradeStatus.running) || searchRequested
 
+  const fetchCoverage = useCallback(async () => {
+    try {
+      const res = await fetch('/api/upgrades/coverage')
+      if (!res.ok) return
+      setCoverage(await res.json())
+    } catch {}
+  }, [])
+
+  const fetchUnscanned = useCallback(async () => {
+    try {
+      const res = await fetch('/api/upgrades/unscanned')
+      if (!res.ok) return
+      setUnscannedTracks(await res.json())
+    } catch {}
+  }, [])
+
   const fetchQueue = useCallback(async () => {
     setLoading(true)
     try {
@@ -108,8 +141,14 @@ export default function Upgrades() {
   }, [filterTab])
 
   useEffect(() => {
-    fetchQueue()
-  }, [fetchQueue])
+    if (filterTab === 'unscanned') {
+      fetchUnscanned()
+      fetchCoverage()
+    } else {
+      fetchQueue()
+      fetchCoverage()
+    }
+  }, [filterTab, fetchQueue, fetchCoverage, fetchUnscanned])
 
   // React to phase transitions
   useEffect(() => {
@@ -147,9 +186,10 @@ export default function Upgrades() {
       setDownloadRequested(false)
       setSearchRequested(false)
       fetchQueue()
+      fetchCoverage()
     }
 
-  }, [upgradeStatus.phase, upgradeStatus.running, fetchQueue])
+  }, [upgradeStatus.phase, upgradeStatus.running, fetchQueue, fetchCoverage])
 
   const handleScan = async () => {
     setScanModalOpen(false)
@@ -168,6 +208,26 @@ export default function Upgrades() {
     } catch {
       setSearchRequested(false)
       toast.error('Failed to start upgrade scan')
+    }
+  }
+
+  const handleScanAlbum = async (artist: string, _album: string) => {
+    setSearchRequested(true)
+    try {
+      await fetch('/api/upgrades/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          format_filter: 'all_lossy',
+          unscanned_only: false,
+          batch_size: 5,
+          artist_filter: artist || null,
+        }),
+      })
+      toast.success(`Scanning: ${artist}`)
+    } catch {
+      setSearchRequested(false)
+      toast.error('Failed to start scan')
     }
   }
 
@@ -249,12 +309,34 @@ export default function Upgrades() {
     { key: 'approved', label: 'Approved', count: approvedCount },
     { key: 'completed', label: 'Completed', count: queue.filter(i => i.status === 'completed').length },
     { key: 'skipped', label: 'Skipped', count: queue.filter(i => i.status === 'skipped').length },
+    { key: 'unscanned', label: 'Never Scanned', count: coverage?.unscanned ?? 0 },
   ]
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold font-[family-name:var(--font-family-display)]">Upgrades</h2>
+      <div className="flex items-start justify-between">
+        <div>
+          <h2 className="text-2xl font-bold font-[family-name:var(--font-family-display)]">Upgrades</h2>
+          {coverage && (
+            <div className="text-xs text-base-500 flex gap-4 flex-wrap mt-1">
+              <span>
+                Coverage:{' '}
+                <span className="text-base-300 font-medium">{coverage.scanned.toLocaleString()} scanned</span>
+                {' · '}
+                <button
+                  className="text-amber-400 font-medium hover:underline"
+                  onClick={() => setFilterTab('unscanned')}
+                >
+                  {coverage.unscanned.toLocaleString()} never scanned
+                </button>
+                {' · '}
+                <span className="text-lime font-medium">{coverage.found.toLocaleString()} found</span>
+                {' · '}
+                <span className="text-base-400">{coverage.completed.toLocaleString()} completed</span>
+              </span>
+            </div>
+          )}
+        </div>
         <div className="flex gap-3">
           {approvedCount > 0 && !isDownloading && (
             <button
@@ -430,6 +512,54 @@ export default function Upgrades() {
 
       {loading ? (
         <SkeletonTable rows={6} cols={7} />
+      ) : filterTab === 'unscanned' ? (
+        unscannedTracks.length === 0 ? (
+          <EmptyState
+            icon={CheckCircle}
+            title="All candidates scanned"
+            description="Every lossy and CD-FLAC track has been searched at least once."
+          />
+        ) : (
+          <GlassCard className="overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-glass-border text-base-400 text-left">
+                    <th className="px-4 py-3 font-medium">Artist</th>
+                    <th className="px-4 py-3 font-medium">Album</th>
+                    <th className="px-4 py-3 font-medium">Title</th>
+                    <th className="px-4 py-3 font-medium">Format</th>
+                    <th className="px-4 py-3 font-medium text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {unscannedTracks.map(track => (
+                    <tr key={track.track_id} className="border-b border-glass-border/30 hover:bg-white/[0.02]">
+                      <td className="px-4 py-3 text-base-300 font-medium">{track.artist || '--'}</td>
+                      <td className="px-4 py-3 text-base-400">{track.album || '--'}</td>
+                      <td className="px-4 py-3 text-base-400">{track.title || '--'}</td>
+                      <td className="px-4 py-3">
+                        <span className="bg-base-700/80 px-1.5 py-0.5 rounded-md border border-base-600/50 font-mono text-xs uppercase">
+                          {track.format} {track.bitrate > 0 ? `${track.bitrate}k` : ''}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => handleScanAlbum(track.artist, track.album)}
+                        >
+                          <Search className="w-3 h-3" />
+                          Scan artist
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </GlassCard>
+        )
       ) : queue.length === 0 ? (
         <EmptyState
           icon={ArrowUpCircle}
