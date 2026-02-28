@@ -3,6 +3,7 @@ import { Sidebar } from './components/layout/Sidebar'
 import Dashboard from './pages/Dashboard'
 import Library from './pages/Library'
 import JobLog from './pages/JobLog'
+import Upgrades from './pages/Upgrades'
 
 export default function App() {
   return (
@@ -14,6 +15,7 @@ export default function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/library" element={<Library />} />
             <Route path="/jobs" element={<JobLog />} />
+            <Route path="/upgrades" element={<Upgrades />} />
           </Routes>
         </main>
       </div>

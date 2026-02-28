@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Library, ScrollText, Music2 } from 'lucide-react'
+import { LayoutDashboard, Library, ScrollText, Music2, ArrowUpCircle } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { getStats } from '../../lib/api'
 
@@ -14,6 +14,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/library', label: 'Library', icon: Library },
+  { to: '/upgrades', label: 'Upgrades', icon: ArrowUpCircle },
   { to: '/jobs', label: 'Job Log', icon: ScrollText },
 ]
 
