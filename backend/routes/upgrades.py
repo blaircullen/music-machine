@@ -7,8 +7,10 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from typing import Literal
+
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from database import get_db
 from file_manager import compute_sha256, import_flac
@@ -21,10 +23,10 @@ router = APIRouter(prefix="/api/upgrades", tags=["upgrades"])
 
 
 class ScanScope(BaseModel):
-    format_filter: str = "all_lossy"   # "all_lossy" | "mp3" | "aac" | "m4a" | "ogg" | "wma" | "opus" | "cd_flac"
+    format_filter: Literal["all_lossy", "mp3", "aac", "m4a", "ogg", "wma", "opus", "cd_flac"] = "all_lossy"
     unscanned_only: bool = True
-    batch_size: int = 50               # max album groups per run (0 = no limit)
-    artist_filter: str | None = None   # partial match on artist name
+    batch_size: int = Field(default=50, ge=0)
+    artist_filter: str | None = None
 
 LOSSY_FORMATS = {"mp3", "aac", "m4a", "ogg", "wma", "opus"}
 _counter_lock = threading.Lock()
