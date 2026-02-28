@@ -51,6 +51,14 @@ export default function Upgrades() {
   const [sortCol, setSortCol] = useState<SortCol>('actions')
   const [sortDir, setSortDir] = useState<SortDir>('asc')
 
+  const [scanModalOpen, setScanModalOpen] = useState(false)
+  const [scanScope, setScanScope] = useState({
+    format_filter: 'all_lossy',
+    unscanned_only: true,
+    batch_size: 50,
+    artist_filter: '',
+  })
+
   const { status: upgradeStatus } = useUpgradeStatus()
   const prevPhaseRef = useRef(upgradeStatus.phase)
 
@@ -144,9 +152,18 @@ export default function Upgrades() {
   }, [upgradeStatus.phase, upgradeStatus.running, fetchQueue])
 
   const handleScan = async () => {
+    setScanModalOpen(false)
     setSearchRequested(true)
     try {
-      await fetch('/api/upgrades/search', { method: 'POST' })
+      await fetch('/api/upgrades/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...scanScope,
+          artist_filter: scanScope.artist_filter || null,
+          batch_size: Number(scanScope.batch_size),
+        }),
+      })
       toast.success('Search started')
     } catch {
       setSearchRequested(false)
@@ -256,7 +273,7 @@ export default function Upgrades() {
             </Button>
           )}
           <button
-            onClick={handleScan}
+            onClick={() => setScanModalOpen(true)}
             disabled={isSearching || isDownloading}
             className="px-4 py-2 rounded-xl text-sm font-medium transition-all duration-300 inline-flex items-center gap-2 bg-base-700/80 text-base-300 hover:bg-base-600 border border-glass-border backdrop-blur-md disabled:opacity-40 disabled:cursor-not-allowed shadow-sm hover:shadow-md"
           >
@@ -518,6 +535,106 @@ export default function Upgrades() {
             </table>
           </div>
         </GlassCard>
+      )}
+      {/* Scan Launcher Modal */}
+      {scanModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={() => setScanModalOpen(false)}
+        >
+          <div
+            className="bg-base-800 border border-glass-border rounded-2xl p-6 w-full max-w-md shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-semibold mb-4">Find Upgrades</h3>
+
+            <div className="space-y-4">
+              {/* Format filter */}
+              <div>
+                <label className="text-xs text-base-400 uppercase tracking-wider mb-2 block">Format</label>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { value: 'all_lossy', label: 'All Lossy' },
+                    { value: 'mp3', label: 'MP3' },
+                    { value: 'aac', label: 'AAC' },
+                    { value: 'cd_flac', label: 'CD FLAC → Hi-Res' },
+                  ].map(opt => (
+                    <button
+                      key={opt.value}
+                      onClick={() => setScanScope(s => ({ ...s, format_filter: opt.value }))}
+                      className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${
+                        scanScope.format_filter === opt.value
+                          ? 'bg-lime/20 border-lime/40 text-lime'
+                          : 'bg-base-700 border-base-600 text-base-400 hover:text-base-200'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Unscanned only toggle */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium">Unscanned only</p>
+                  <p className="text-xs text-base-500">Skip tracks already searched</p>
+                </div>
+                <button
+                  onClick={() => setScanScope(s => ({ ...s, unscanned_only: !s.unscanned_only }))}
+                  className={`w-11 h-6 rounded-full transition-all relative ${scanScope.unscanned_only ? 'bg-lime' : 'bg-base-600'}`}
+                >
+                  <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${scanScope.unscanned_only ? 'left-5' : 'left-0.5'}`} />
+                </button>
+              </div>
+
+              {/* Batch size */}
+              <div>
+                <label className="text-xs text-base-400 uppercase tracking-wider mb-1 block">
+                  Batch size (albums per run)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={500}
+                  value={scanScope.batch_size}
+                  onChange={e => setScanScope(s => ({ ...s, batch_size: parseInt(e.target.value) || 50 }))}
+                  className="w-full bg-base-700 border border-base-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-lime/50"
+                />
+              </div>
+
+              {/* Artist filter */}
+              <div>
+                <label className="text-xs text-base-400 uppercase tracking-wider mb-1 block">
+                  Artist filter (optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Pink Floyd"
+                  value={scanScope.artist_filter}
+                  onChange={e => setScanScope(s => ({ ...s, artist_filter: e.target.value }))}
+                  className="w-full bg-base-700 border border-base-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-lime/50 placeholder:text-base-600"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => setScanModalOpen(false)}
+                className="flex-1 px-4 py-2 rounded-xl text-sm font-medium bg-base-700 text-base-400 hover:bg-base-600 border border-base-600 transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleScan}
+                className="flex-1 px-4 py-2 rounded-xl text-sm font-semibold bg-lime text-white hover:bg-lime/90 transition-all inline-flex items-center justify-center gap-2"
+              >
+                <Search className="w-4 h-4" />
+                Start Scan
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
