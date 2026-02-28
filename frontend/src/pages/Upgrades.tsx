@@ -329,10 +329,10 @@ export default function Upgrades() {
   const totalCandidates = queue.length
   const hiResMatches = queue.filter(i => i.match_quality === 'hi_res').length
   const approvedCount = queue.filter(i => i.status === 'approved').length
-  const foundCount = queue.filter(i => i.status === 'found' || i.status === 'pending').length
+  const foundCount = queue.filter(i => i.status === 'found').length
 
   const foundItems = useMemo(
-    () => sortedQueue.filter(i => i.status === 'found' || i.status === 'pending'),
+    () => sortedQueue.filter(i => i.status === 'found'),
     [sortedQueue]
   )
   const reviewItem = foundItems[reviewIndex] ?? null
