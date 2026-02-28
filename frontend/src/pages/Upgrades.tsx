@@ -132,6 +132,7 @@ export default function Upgrades() {
     try {
       const params = filterTab === 'all' ? '' : `?status=${filterTab}`
       const res = await fetch(`/api/upgrades${params}`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data: QueueItem[] = await res.json()
       setQueue(data)
     } catch {
@@ -343,14 +344,12 @@ export default function Upgrades() {
         e.preventDefault()
         if (reviewItem && !actionInProgress.has(reviewItem.id)) {
           handleApprove(reviewItem.id, reviewItem.artist, reviewItem.title)
-          setReviewIndex(i => i + 1)
         }
       }
       if (e.key === 's' || e.key === 'S' || e.key === 'x' || e.key === 'X') {
         e.preventDefault()
         if (reviewItem && !actionInProgress.has(reviewItem.id)) {
           handleSkip(reviewItem.id, reviewItem.artist, reviewItem.title)
-          setReviewIndex(i => i + 1)
         }
       }
       if (e.key === 'ArrowRight') setReviewIndex(i => Math.min(i + 1, foundItems.length - 1))
@@ -677,7 +676,6 @@ export default function Upgrades() {
                     variant="ghost"
                     onClick={() => {
                       handleSkip(reviewItem.id, reviewItem.artist, reviewItem.title)
-                      setReviewIndex(i => i + 1)  // clamp effect will handle boundary
                     }}
                     disabled={actionInProgress.has(reviewItem.id)}
                   >
@@ -688,7 +686,6 @@ export default function Upgrades() {
                     variant="primary"
                     onClick={() => {
                       handleApprove(reviewItem.id, reviewItem.artist, reviewItem.title)
-                      setReviewIndex(i => i + 1)  // clamp effect will handle boundary
                     }}
                     disabled={actionInProgress.has(reviewItem.id)}
                   >
