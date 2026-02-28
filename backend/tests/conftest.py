@@ -1,26 +1,24 @@
-"""
-Test configuration: redirect DB_PATH to a writable temp location and
-initialize the schema so endpoint tests can hit real SQLite tables.
-"""
 import os
 import tempfile
+from pathlib import Path
 import pytest
+from database import init_db
 import database
 
 
 def pytest_configure(config):
-    """Set DB_PATH env var before any modules are imported by test files."""
-    # Only redirect if still pointing at the Docker volume path
-    if os.environ.get("DB_PATH", "/data/plex-dedup.db").startswith("/data"):
-        _tmp = tempfile.mktemp(suffix=".db", prefix="plex-dedup-test-")
-        os.environ["DB_PATH"] = _tmp
+    """Set DB_PATH to a temp file before any module imports database."""
+    fd, path = tempfile.mkstemp(suffix=".db", prefix="plex-dedup-test-")
+    os.close(fd)
+    os.environ["DB_PATH"] = path
 
 
-@pytest.fixture(autouse=True, scope="session")
+@pytest.fixture(scope="session", autouse=True)
 def init_test_db():
-    """Patch database.DB_PATH to match the env var and run schema init."""
-    from pathlib import Path
-    db_path = Path(os.environ.get("DB_PATH", "/data/plex-dedup.db"))
-    database.DB_PATH = db_path
-    database.init_db()
+    db_path = os.environ.get("DB_PATH", "")
+    database.DB_PATH = Path(db_path)
+    init_db()
     yield
+    path = Path(db_path)
+    if path.exists():
+        path.unlink()

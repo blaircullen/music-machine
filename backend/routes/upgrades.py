@@ -774,7 +774,8 @@ def approve_hi_res_upgrades():
                  AND slskd_username IS NOT NULL
                  AND slskd_filename IS NOT NULL"""
         )
-    return {"ok": True, "approved": result.rowcount}
+        count = result.rowcount
+    return {"ok": True, "approved": count}
 
 
 @router.post("/{item_id}/approve")
