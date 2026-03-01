@@ -95,7 +95,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="plex-dedup", version="2.0.0", lifespan=lifespan)
 
 # Import and register all routers
-from routes import scan, dupes, upgrades, trash, stats, jobs, settings, reorg
+from routes import scan, dupes, upgrades, trash, stats, jobs, settings, reorg, playlists
 
 app.include_router(scan.router)
 app.include_router(dupes.router)
@@ -105,6 +105,7 @@ app.include_router(stats.router)
 app.include_router(jobs.router)
 app.include_router(settings.router)
 app.include_router(reorg.router)
+app.include_router(playlists.router)
 
 
 @app.websocket("/ws")

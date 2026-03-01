@@ -4,12 +4,15 @@ and expose last-run status.
 """
 
 import json
+import logging
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/reorg", tags=["reorg"])
 
@@ -68,6 +71,28 @@ def _run_reorg_worker():
 
     try:
         stats = run_reorg(update_fn=update)
+
+        # Trigger Plex scan + playlist sync after successful reorg
+        if stats.get("moved", 0) > 0 or stats.get("inbox_moved", 0) > 0:
+            try:
+                from plex_playlist_sync import (
+                    sync_all_m3u_playlists,
+                    trigger_plex_scan,
+                    wait_for_plex_scan,
+                )
+
+                update({"phase": "plex_scan"})
+                trigger_plex_scan()
+                wait_for_plex_scan(timeout=120)
+
+                update({"phase": "playlist_sync"})
+                sync_results = sync_all_m3u_playlists()
+                stats["playlist_sync"] = sync_results
+                logger.info(f"Post-reorg playlist sync: {len(sync_results)} playlists")
+            except Exception as e:
+                logger.error(f"Post-reorg Plex sync failed: {e}")
+                stats["playlist_sync_error"] = str(e)
+
         last_run = {
             "timestamp": datetime.now().isoformat(),
             "elapsed_s": int(time.time() - start),
