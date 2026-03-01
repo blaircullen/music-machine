@@ -136,7 +136,7 @@ function DuplicatesTab() {
               onClick={() => setFilter(key)}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                 filter === key
-                  ? 'bg-[#6c63ff]/15 text-[#a89fff] border border-[#6c63ff]/30'
+                  ? 'bg-[#d4a017]/15 text-[#f0c95c] border border-[#d4a017]/30'
                   : 'text-slate-500 hover:text-slate-300 hover:bg-[#2a2d3a]'
               }`}
             >
@@ -180,13 +180,13 @@ function DuplicatesTab() {
           <table className="w-full text-sm table-fixed">
             <thead>
               <tr className="border-b border-[#2a2d3a] text-xs text-slate-500 uppercase tracking-wide">
-                <th className="px-4 py-3 text-left font-medium w-8" />
-                <th className="px-4 py-3 text-left font-medium w-[22%]">Artist</th>
-                <th className="px-4 py-3 text-left font-medium">Title</th>
-                <th className="px-4 py-3 text-center font-medium w-[10%]">Match</th>
-                <th className="px-4 py-3 text-center font-medium w-[10%]">Confidence</th>
-                <th className="px-4 py-3 text-center font-medium w-[8%]">Members</th>
-                <th className="px-4 py-3 text-right font-medium w-[12%]">Actions</th>
+                <th scope="col" className="px-4 py-3 text-left font-medium w-8" />
+                <th scope="col" className="px-4 py-3 text-left font-medium w-[22%]">Artist</th>
+                <th scope="col" className="px-4 py-3 text-left font-medium">Title</th>
+                <th scope="col" className="px-4 py-3 text-center font-medium w-[10%]">Match</th>
+                <th scope="col" className="px-4 py-3 text-center font-medium w-[10%]">Confidence</th>
+                <th scope="col" className="px-4 py-3 text-center font-medium w-[8%]">Members</th>
+                <th scope="col" className="px-4 py-3 text-right font-medium w-[12%]">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -257,12 +257,12 @@ function DuplicatesTab() {
                             <table className="w-full text-xs">
                               <thead>
                                 <tr className="text-slate-600 uppercase tracking-wide border-b border-[#2a2d3a]/50">
-                                  <th className="px-3 py-2 text-left font-medium">Status</th>
-                                  <th className="px-3 py-2 text-left font-medium">Format</th>
-                                  <th className="px-3 py-2 text-left font-medium">Bitrate</th>
-                                  <th className="px-3 py-2 text-left font-medium">Bit Depth</th>
-                                  <th className="px-3 py-2 text-left font-medium">Sample Rate</th>
-                                  <th className="px-3 py-2 text-left font-medium">Path</th>
+                                  <th scope="col" className="px-3 py-2 text-left font-medium">Status</th>
+                                  <th scope="col" className="px-3 py-2 text-left font-medium">Format</th>
+                                  <th scope="col" className="px-3 py-2 text-left font-medium">Bitrate</th>
+                                  <th scope="col" className="px-3 py-2 text-left font-medium">Bit Depth</th>
+                                  <th scope="col" className="px-3 py-2 text-left font-medium">Sample Rate</th>
+                                  <th scope="col" className="px-3 py-2 text-left font-medium">Path</th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -494,12 +494,12 @@ function UpgradesTab() {
       )}
 
       {isDownloading && (
-        <div className="rounded-xl bg-[#1a1d27] border border-[#6c63ff]/30 p-4 space-y-3">
+        <div className="rounded-xl bg-[#1a1d27] border border-[#d4a017]/30 p-4 space-y-3">
           {/* Header */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Download className="w-4 h-4 text-[#a89fff] animate-bounce" />
-              <span className="text-sm font-semibold text-[#a89fff]">Downloading FLACs</span>
+              <Download className="w-4 h-4 text-[#f0c95c] animate-bounce" />
+              <span className="text-sm font-semibold text-[#f0c95c]">Downloading FLACs</span>
               {upgradeStatus?.download_total ? (
                 <span className="text-xs text-slate-500">
                   {upgradeStatus.download_index}/{upgradeStatus.download_total}
@@ -540,9 +540,9 @@ function UpgradesTab() {
               const isActive = key === upgradeStatus?.current_step
               return (
                 <div key={key} className="flex items-center gap-2">
-                  {i > 0 && <div className={`h-px w-5 ${isDone || isActive ? 'bg-[#6c63ff]/50' : 'bg-[#2a2d3a]'}`} />}
+                  {i > 0 && <div className={`h-px w-5 ${isDone || isActive ? 'bg-[#d4a017]/50' : 'bg-[#2a2d3a]'}`} />}
                   <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-all ${
-                    isActive ? 'bg-[#6c63ff]/15 text-[#a89fff] border border-[#6c63ff]/40'
+                    isActive ? 'bg-[#d4a017]/15 text-[#f0c95c] border border-[#d4a017]/40'
                     : isDone ? 'text-slate-400 border border-[#2a2d3a]'
                     : 'text-slate-600 border border-[#1e2030]'
                   }`}>
@@ -582,7 +582,7 @@ function UpgradesTab() {
                 onClick={() => setFilter(key)}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                   filter === key
-                    ? 'bg-[#6c63ff]/15 text-[#a89fff] border border-[#6c63ff]/30'
+                    ? 'bg-[#d4a017]/15 text-[#f0c95c] border border-[#d4a017]/30'
                     : 'text-slate-500 hover:text-slate-300 hover:bg-[#2a2d3a]'
                 }`}
               >
@@ -786,7 +786,7 @@ export default function Library() {
             onClick={() => setTab(key)}
             className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px ${
               activeTab === key
-                ? 'text-[#a89fff] border-[#6c63ff]'
+                ? 'text-[#f0c95c] border-[#d4a017]'
                 : 'text-slate-500 border-transparent hover:text-slate-300 hover:border-[#2a2d3a]'
             }`}
           >

@@ -349,13 +349,13 @@ export default function Tagger() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-glass-border text-base-400 text-left">
-                  <th className="px-4 py-3 font-medium">File</th>
-                  <th className="px-4 py-3 font-medium">Matched Artist</th>
-                  <th className="px-4 py-3 font-medium">Matched Title</th>
-                  <th className="px-4 py-3 font-medium">Album</th>
-                  <th className="px-4 py-3 font-medium text-center">Score</th>
-                  <th className="px-4 py-3 font-medium text-center">Status</th>
-                  <th className="px-4 py-3 font-medium text-right">Actions</th>
+                  <th scope="col" className="px-4 py-3 font-medium">File</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Matched Artist</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Matched Title</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Album</th>
+                  <th scope="col" className="px-4 py-3 font-medium text-center">Score</th>
+                  <th scope="col" className="px-4 py-3 font-medium text-center">Status</th>
+                  <th scope="col" className="px-4 py-3 font-medium text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>

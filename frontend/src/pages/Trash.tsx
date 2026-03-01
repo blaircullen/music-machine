@@ -127,13 +127,13 @@ export default function Trash() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-glass-border text-base-400 text-left">
-                  <th className="px-4 py-3 font-medium">Artist</th>
-                  <th className="px-4 py-3 font-medium">Title</th>
-                  <th className="px-4 py-3 font-medium">Album</th>
-                  <th className="px-4 py-3 font-medium">Format</th>
-                  <th className="px-4 py-3 font-medium">Original Path</th>
-                  <th className="px-4 py-3 font-medium">Trashed</th>
-                  <th className="px-4 py-3 font-medium"></th>
+                  <th scope="col" className="px-4 py-3 font-medium">Artist</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Title</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Album</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Format</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Original Path</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Trashed</th>
+                  <th scope="col" className="px-4 py-3 font-medium"></th>
                 </tr>
               </thead>
               <AnimatePresence>

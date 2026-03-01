@@ -271,6 +271,7 @@ export default function Dashboard() {
             </div>
             <button
               onClick={() => setScanResult(null)}
+              aria-label="Dismiss scan result"
               className="text-slate-600 hover:text-slate-400 p-1 transition-colors rounded"
             >
               <X className="w-3.5 h-3.5" />

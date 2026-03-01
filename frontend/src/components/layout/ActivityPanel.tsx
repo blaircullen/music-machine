@@ -25,7 +25,7 @@ export function ActivityPanel() {
   if (scan.running) {
     const phaseLabel = SCAN_PHASE_LABELS[scan.phase] ?? 'Working...'
     return (
-      <div className="flex items-center gap-2 text-xs text-lime">
+      <div className="flex items-center gap-2 text-xs text-accent">
         <Loader2 className="w-3.5 h-3.5 animate-spin" />
         <span>
           {scan.phase === 'scanning' && scan.total > 0
@@ -41,7 +41,7 @@ export function ActivityPanel() {
     const stepLabel = upgrade.current_step === 'importing' ? '→ Library'
       : '↓ Downloading'
     return (
-      <div className="flex items-center gap-2 text-xs text-lime">
+      <div className="flex items-center gap-2 text-xs text-accent">
         <Download className="w-3.5 h-3.5 animate-bounce" />
         <span className="truncate max-w-[240px]">
           {upgrade.download_total > 0 && `${upgrade.download_index}/${upgrade.download_total} `}
@@ -54,7 +54,7 @@ export function ActivityPanel() {
 
   if (upgrade.phase === 'searching' && upgrade.running) {
     return (
-      <div className="flex items-center gap-2 text-xs text-lime">
+      <div className="flex items-center gap-2 text-xs text-accent">
         <Search className="w-3.5 h-3.5 animate-pulse" />
         <span>
           Searching: {upgrade.searched} searched, {upgrade.found} found

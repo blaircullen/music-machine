@@ -203,7 +203,7 @@ export default function JobLog() {
               onClick={() => setFilter(key)}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                 filter === key
-                  ? 'bg-[#6c63ff]/15 text-[#a89fff] border border-[#6c63ff]/30'
+                  ? 'bg-[#d4a017]/15 text-[#f0c95c] border border-[#d4a017]/30'
                   : 'text-slate-500 hover:text-slate-300 hover:bg-[#2a2d3a]'
               }`}
             >
@@ -233,12 +233,12 @@ export default function JobLog() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-[#2a2d3a] text-xs text-slate-500 uppercase tracking-wide">
-                <th className="px-4 py-3 text-left font-medium">Type</th>
-                <th className="px-4 py-3 text-center font-medium">Status</th>
-                <th className="px-4 py-3 text-left font-medium">Started</th>
-                <th className="px-4 py-3 text-left font-medium">Duration</th>
-                <th className="px-4 py-3 text-left font-medium">Error</th>
-                <th className="px-4 py-3 text-right font-medium">Actions</th>
+                <th scope="col" className="px-4 py-3 text-left font-medium">Type</th>
+                <th scope="col" className="px-4 py-3 text-center font-medium">Status</th>
+                <th scope="col" className="px-4 py-3 text-left font-medium">Started</th>
+                <th scope="col" className="px-4 py-3 text-left font-medium">Duration</th>
+                <th scope="col" className="px-4 py-3 text-left font-medium">Error</th>
+                <th scope="col" className="px-4 py-3 text-right font-medium">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -347,10 +347,10 @@ export default function JobLog() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-[#2a2d3a] text-xs text-slate-500 uppercase tracking-wide">
-                  <th className="px-4 py-3 text-left font-medium">Original Path</th>
-                  <th className="px-4 py-3 text-left font-medium">Size</th>
-                  <th className="px-4 py-3 text-left font-medium">Moved</th>
-                  <th className="px-4 py-3 text-right font-medium">Actions</th>
+                  <th scope="col" className="px-4 py-3 text-left font-medium">Original Path</th>
+                  <th scope="col" className="px-4 py-3 text-left font-medium">Size</th>
+                  <th scope="col" className="px-4 py-3 text-left font-medium">Moved</th>
+                  <th scope="col" className="px-4 py-3 text-right font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody>

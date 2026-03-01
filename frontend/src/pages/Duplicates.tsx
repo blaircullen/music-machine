@@ -213,13 +213,13 @@ export default function Duplicates() {
             key={tab.key}
             onClick={() => setFilterTab(tab.key)}
             className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all duration-300 relative ${filterTab === tab.key
-                ? 'text-lime drop-shadow-[0_0_8px_rgba(16,185,129,0.5)]'
+                ? 'text-accent drop-shadow-[0_0_8px_rgba(212,160,23,0.5)]'
                 : 'text-base-500 hover:text-base-300 hover:bg-base-700/50'
               }`}
           >
             {tab.label}
             {filterTab === tab.key && (
-              <motion.div layoutId="dupTabIndicator" className="absolute -bottom-1 left-3 right-3 h-0.5 bg-lime rounded-full shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
+              <motion.div layoutId="dupTabIndicator" className="absolute -bottom-1 left-3 right-3 h-0.5 bg-accent rounded-full shadow-[0_0_8px_rgba(212,160,23,0.8)]" />
             )}
           </button>
         ))}
@@ -238,21 +238,21 @@ export default function Duplicates() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-glass-border/40 text-base-400 text-left bg-base-800/20 backdrop-blur-sm">
-                <th className="px-4 py-4 font-medium w-8"></th>
-                <th className="px-4 py-4 font-medium cursor-pointer hover:text-base-200 select-none transition-colors" onClick={() => toggleSort('artist')}>
+                <th scope="col" className="px-4 py-4 font-medium w-8"></th>
+                <th scope="col" className="px-4 py-4 font-medium cursor-pointer hover:text-base-200 select-none transition-colors" onClick={() => toggleSort('artist')}>
                   Artist{sortIndicator('artist')}
                 </th>
-                <th className="px-4 py-4 font-medium">Title</th>
-                <th className="px-4 py-4 font-medium">Album</th>
-                <th className="px-4 py-4 font-medium text-center">Members</th>
-                <th className="px-4 py-4 font-medium cursor-pointer hover:text-base-200 select-none text-center transition-colors" onClick={() => toggleSort('quality_gap')}>
+                <th scope="col" className="px-4 py-4 font-medium">Title</th>
+                <th scope="col" className="px-4 py-4 font-medium">Album</th>
+                <th scope="col" className="px-4 py-4 font-medium text-center">Members</th>
+                <th scope="col" className="px-4 py-4 font-medium cursor-pointer hover:text-base-200 select-none text-center transition-colors" onClick={() => toggleSort('quality_gap')}>
                   Quality Gap{sortIndicator('quality_gap')}
                 </th>
-                <th className="px-4 py-4 font-medium text-center">Match</th>
-                <th className="px-4 py-4 font-medium cursor-pointer hover:text-base-200 select-none text-center transition-colors" onClick={() => toggleSort('confidence')}>
+                <th scope="col" className="px-4 py-4 font-medium text-center">Match</th>
+                <th scope="col" className="px-4 py-4 font-medium cursor-pointer hover:text-base-200 select-none text-center transition-colors" onClick={() => toggleSort('confidence')}>
                   Confidence{sortIndicator('confidence')}
                 </th>
-                <th className="px-4 py-4 font-medium text-right">Actions</th>
+                <th scope="col" className="px-4 py-4 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -301,9 +301,9 @@ function GroupRows({
         className="border-b border-glass-border/30 hover:bg-white/[0.02] cursor-pointer transition-colors group"
         onClick={onToggle}
       >
-        <td className="px-4 py-4 text-base-500 group-hover:text-lime transition-colors">
+        <td className="px-4 py-4 text-base-500 group-hover:text-accent transition-colors">
           <motion.span animate={{ rotate: isExpanded ? 90 : 0 }} className="inline-block">
-            <ChevronRight className="w-5 h-5 drop-shadow-[0_0_8px_rgba(16,185,129,0.3)]" />
+            <ChevronRight className="w-5 h-5 drop-shadow-[0_0_8px_rgba(212,160,23,0.3)]" />
           </motion.span>
         </td>
         <td className="px-4 py-4 text-base-300 font-medium">{rep?.artist ?? '-'}</td>
@@ -349,14 +349,14 @@ function GroupRows({
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="text-base-500 text-left border-b border-base-700/50">
-                      <th className="px-3 py-3 font-medium uppercase tracking-wider">Status</th>
-                      <th className="px-3 py-3 font-medium uppercase tracking-wider">Format</th>
-                      <th className="px-3 py-3 font-medium uppercase tracking-wider">Bitrate</th>
-                      <th className="px-3 py-3 font-medium uppercase tracking-wider">Bit Depth</th>
-                      <th className="px-3 py-3 font-medium uppercase tracking-wider">Sample Rate</th>
-                      <th className="px-3 py-3 font-medium uppercase tracking-wider">Size</th>
-                      <th className="px-3 py-3 font-medium uppercase tracking-wider">File Path</th>
-                      {!group.resolved && <th className="px-3 py-3 font-medium text-right uppercase tracking-wider">Action</th>}
+                      <th scope="col" className="px-3 py-3 font-medium uppercase tracking-wider">Status</th>
+                      <th scope="col" className="px-3 py-3 font-medium uppercase tracking-wider">Format</th>
+                      <th scope="col" className="px-3 py-3 font-medium uppercase tracking-wider">Bitrate</th>
+                      <th scope="col" className="px-3 py-3 font-medium uppercase tracking-wider">Bit Depth</th>
+                      <th scope="col" className="px-3 py-3 font-medium uppercase tracking-wider">Sample Rate</th>
+                      <th scope="col" className="px-3 py-3 font-medium uppercase tracking-wider">Size</th>
+                      <th scope="col" className="px-3 py-3 font-medium uppercase tracking-wider">File Path</th>
+                      {!group.resolved && <th scope="col" className="px-3 py-3 font-medium text-right uppercase tracking-wider">Action</th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -366,7 +366,7 @@ function GroupRows({
                         <tr
                           key={track.id}
                           className={`border-b border-base-700/30 transition-colors ${isWinner
-                            ? 'bg-lime/5 border-l-2 border-l-lime hover:bg-lime/10'
+                            ? 'bg-accent/5 border-l-2 border-l-lime hover:bg-accent/10'
                             : 'bg-transparent hover:bg-base-700/30 border-l-2 border-l-transparent'
                             }`}
                         >

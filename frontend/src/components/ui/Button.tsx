@@ -72,6 +72,7 @@ export function Button({
       className={`
         inline-flex items-center justify-center rounded-lg font-medium
         transition-all duration-150 cursor-pointer
+        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#d4a017]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0f1117]
         disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none
         ${VARIANT_CLASSES[variant]}
         ${SIZE_CLASSES[size]}

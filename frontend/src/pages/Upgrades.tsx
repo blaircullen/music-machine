@@ -396,7 +396,7 @@ export default function Upgrades() {
                   {coverage.unscanned.toLocaleString()} never scanned
                 </button>
                 {' · '}
-                <span className="text-lime font-medium">{coverage.found.toLocaleString()} found</span>
+                <span className="text-accent font-medium">{coverage.found.toLocaleString()} found</span>
                 {' · '}
                 <span className="text-base-400">{coverage.completed.toLocaleString()} completed</span>
               </span>
@@ -408,7 +408,7 @@ export default function Upgrades() {
             <button
               onClick={handleDownloadApproved}
               disabled={isDownloading}
-              className="px-4 py-2 rounded-xl text-sm font-semibold transition-all duration-200 inline-flex items-center gap-2 bg-lime text-white hover:bg-lime/90 disabled:opacity-60"
+              className="px-4 py-2 rounded-xl text-sm font-semibold transition-all duration-200 inline-flex items-center gap-2 bg-accent text-white hover:bg-accent/90 disabled:opacity-60"
             >
               <Download className="w-4 h-4" />
               Download Approved ({approvedCount})
@@ -425,7 +425,7 @@ export default function Upgrades() {
             disabled={isSearching || isDownloading}
             className="px-4 py-2 rounded-xl text-sm font-medium transition-all duration-300 inline-flex items-center gap-2 bg-base-700/80 text-base-300 hover:bg-base-600 border border-glass-border backdrop-blur-md disabled:opacity-40 disabled:cursor-not-allowed shadow-sm hover:shadow-md"
           >
-            {isSearching ? <Loader2 className="w-4 h-4 animate-spin text-lime" /> : <Search className="w-4 h-4 text-lime" />}
+            {isSearching ? <Loader2 className="w-4 h-4 animate-spin text-accent" /> : <Search className="w-4 h-4 text-accent" />}
             {isSearching ? 'Searching...' : 'Find Upgrades'}
           </button>
         </div>
@@ -445,14 +445,14 @@ export default function Upgrades() {
 
       {/* Download progress panel */}
       {isDownloading && (
-        <GlassCard className="p-5 border-lime/30 shadow-[0_0_20px_rgba(16,185,129,0.15)] relative overflow-hidden">
+        <GlassCard className="p-5 border-accent/30 shadow-[0_0_20px_rgba(212,160,23,0.15)] relative overflow-hidden">
           <div className="absolute inset-0 bg-gradient-to-r from-transparent via-lime/5 to-transparent -translate-x-full animate-[shimmer_2s_infinite]" />
 
           {/* Header row */}
           <div className="flex items-center justify-between mb-4 relative z-10">
             <div className="flex items-center gap-3">
-              <div className="p-2 rounded-xl bg-lime-dim border border-lime/20 shadow-[0_0_10px_rgba(16,185,129,0.2)]">
-                <Download className="w-4 h-4 text-lime animate-bounce" />
+              <div className="p-2 rounded-xl bg-accent-dim border border-accent/20 shadow-[0_0_10px_rgba(212,160,23,0.2)]">
+                <Download className="w-4 h-4 text-accent animate-bounce" />
               </div>
               <div>
                 <p className="text-sm font-semibold text-base-200">Downloading FLAC upgrades</p>
@@ -467,7 +467,7 @@ export default function Upgrades() {
             {/* Counts */}
             <div className="flex items-center gap-4 text-xs text-base-400">
               {upgradeStatus.completed > 0 && (
-                <span className="text-lime font-medium">✓ {upgradeStatus.completed} done</span>
+                <span className="text-accent font-medium">✓ {upgradeStatus.completed} done</span>
               )}
               {upgradeStatus.failed > 0 && (
                 <span className="text-red-400 font-medium">✗ {upgradeStatus.failed} failed</span>
@@ -499,10 +499,10 @@ export default function Upgrades() {
               const isActive = key === upgradeStatus.current_step
               return (
                 <div key={key} className="flex items-center gap-2">
-                  {i > 0 && <div className={`h-px w-6 ${isDone || isActive ? 'bg-lime/50' : 'bg-base-600'}`} />}
+                  {i > 0 && <div className={`h-px w-6 ${isDone || isActive ? 'bg-accent/50' : 'bg-base-600'}`} />}
                   <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-all duration-300 ${
                     isActive
-                      ? 'bg-lime/15 text-lime border border-lime/30 shadow-[0_0_8px_rgba(16,185,129,0.2)]'
+                      ? 'bg-accent/15 text-accent border border-accent/30 shadow-[0_0_8px_rgba(212,160,23,0.2)]'
                       : isDone
                       ? 'bg-base-700/50 text-base-300 border border-base-600'
                       : 'bg-base-800/50 text-base-500 border border-base-700'
@@ -551,17 +551,17 @@ export default function Upgrades() {
               key={tab.key}
               onClick={() => setFilterTab(tab.key)}
               className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all duration-300 flex items-center gap-2 relative ${filterTab === tab.key
-                  ? 'text-lime drop-shadow-[0_0_8px_rgba(16,185,129,0.5)]'
+                  ? 'text-accent drop-shadow-[0_0_8px_rgba(212,160,23,0.5)]'
                   : 'text-base-500 hover:text-base-300 hover:bg-base-700/50'
                 }`}
             >
               {tab.label}
               {tab.count > 0 && (
-                <span className={`text-xs px-1.5 py-0.5 rounded-md ${filterTab === tab.key ? 'bg-lime/20 text-lime font-bold' : 'bg-base-800/80'}`}>{tab.count}</span>
+                <span className={`text-xs px-1.5 py-0.5 rounded-md ${filterTab === tab.key ? 'bg-accent/20 text-accent font-bold' : 'bg-base-800/80'}`}>{tab.count}</span>
               )}
               {/* Active Indiciator Line */}
               {filterTab === tab.key && (
-                <motion.div layoutId="activeTabIndicator" className="absolute -bottom-1 left-3 right-3 h-0.5 bg-lime rounded-full shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
+                <motion.div layoutId="activeTabIndicator" className="absolute -bottom-1 left-3 right-3 h-0.5 bg-accent rounded-full shadow-[0_0_8px_rgba(212,160,23,0.8)]" />
               )}
             </button>
           ))}
@@ -578,7 +578,7 @@ export default function Upgrades() {
               onClick={() => { setReviewMode(m => !m); setReviewIndex(0) }}
               className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${
                 reviewMode
-                  ? 'bg-lime/20 border-lime/40 text-lime'
+                  ? 'bg-accent/20 border-accent/40 text-accent'
                   : 'bg-base-700 border-base-600 text-base-400 hover:text-base-200'
               }`}
             >
@@ -603,11 +603,11 @@ export default function Upgrades() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-glass-border text-base-400 text-left">
-                    <th className="px-4 py-3 font-medium">Artist</th>
-                    <th className="px-4 py-3 font-medium">Album</th>
-                    <th className="px-4 py-3 font-medium">Title</th>
-                    <th className="px-4 py-3 font-medium">Format</th>
-                    <th className="px-4 py-3 font-medium text-right">Action</th>
+                    <th scope="col" className="px-4 py-3 font-medium">Artist</th>
+                    <th scope="col" className="px-4 py-3 font-medium">Album</th>
+                    <th scope="col" className="px-4 py-3 font-medium">Title</th>
+                    <th scope="col" className="px-4 py-3 font-medium">Format</th>
+                    <th scope="col" className="px-4 py-3 font-medium text-right">Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -733,9 +733,9 @@ export default function Upgrades() {
                         className={`px-4 py-3 font-medium cursor-pointer select-none hover:text-base-200 transition-colors duration-150 ${align === 'center' ? 'text-center' : align === 'right' ? 'text-right' : ''}`}
                       >
                         <span className={`inline-flex items-center gap-1 ${align === 'center' ? 'justify-center' : align === 'right' ? 'justify-end' : ''}`}>
-                          {align === 'right' && <Icon className={`w-3.5 h-3.5 ${active ? 'text-lime' : 'text-base-600'}`} />}
-                          <span className={active ? 'text-lime' : ''}>{label}</span>
-                          {align !== 'right' && <Icon className={`w-3.5 h-3.5 ${active ? 'text-lime' : 'text-base-600'}`} />}
+                          {align === 'right' && <Icon className={`w-3.5 h-3.5 ${active ? 'text-accent' : 'text-base-600'}`} />}
+                          <span className={active ? 'text-accent' : ''}>{label}</span>
+                          {align !== 'right' && <Icon className={`w-3.5 h-3.5 ${active ? 'text-accent' : 'text-base-600'}`} />}
                         </span>
                       </th>
                     )
@@ -835,7 +835,7 @@ export default function Upgrades() {
                       onClick={() => setScanScope(s => ({ ...s, format_filter: opt.value }))}
                       className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${
                         scanScope.format_filter === opt.value
-                          ? 'bg-lime/20 border-lime/40 text-lime'
+                          ? 'bg-accent/20 border-accent/40 text-accent'
                           : 'bg-base-700 border-base-600 text-base-400 hover:text-base-200'
                       }`}
                     >
@@ -853,7 +853,7 @@ export default function Upgrades() {
                 </div>
                 <button
                   onClick={() => setScanScope(s => ({ ...s, unscanned_only: !s.unscanned_only }))}
-                  className={`w-11 h-6 rounded-full transition-all relative ${scanScope.unscanned_only ? 'bg-lime' : 'bg-base-600'}`}
+                  className={`w-11 h-6 rounded-full transition-all relative ${scanScope.unscanned_only ? 'bg-accent' : 'bg-base-600'}`}
                 >
                   <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${scanScope.unscanned_only ? 'left-5' : 'left-0.5'}`} />
                 </button>
@@ -870,7 +870,7 @@ export default function Upgrades() {
                   max={500}
                   value={scanScope.batch_size}
                   onChange={e => setScanScope(s => ({ ...s, batch_size: parseInt(e.target.value) || 50 }))}
-                  className="w-full bg-base-700 border border-base-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-lime/50"
+                  className="w-full bg-base-700 border border-base-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent/50"
                 />
               </div>
 
@@ -884,7 +884,7 @@ export default function Upgrades() {
                   placeholder="e.g. Pink Floyd"
                   value={scanScope.artist_filter}
                   onChange={e => setScanScope(s => ({ ...s, artist_filter: e.target.value }))}
-                  className="w-full bg-base-700 border border-base-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-lime/50 placeholder:text-base-600"
+                  className="w-full bg-base-700 border border-base-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent/50 placeholder:text-base-600"
                 />
               </div>
             </div>
@@ -898,7 +898,7 @@ export default function Upgrades() {
               </button>
               <button
                 onClick={handleScan}
-                className="flex-1 px-4 py-2 rounded-xl text-sm font-semibold bg-lime text-white hover:bg-lime/90 transition-all inline-flex items-center justify-center gap-2"
+                className="flex-1 px-4 py-2 rounded-xl text-sm font-semibold bg-accent text-white hover:bg-accent/90 transition-all inline-flex items-center justify-center gap-2"
               >
                 <Search className="w-4 h-4" />
                 Start Scan
