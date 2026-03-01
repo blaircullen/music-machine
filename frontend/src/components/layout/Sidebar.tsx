@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Library, ScrollText, Music2, ArrowUpCircle, Wand2 } from 'lucide-react'
+import { LayoutDashboard, Library, ScrollText, ArrowUpCircle, Wand2 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { getStats } from '../../lib/api'
 
@@ -45,11 +45,20 @@ export function Sidebar() {
   return (
     <aside className="fixed left-0 top-0 h-screen w-[220px] flex flex-col bg-[#13151f] border-r border-[#2a2d3a] z-40">
       {/* Logo */}
-      <div className="flex items-center gap-3 px-5 h-16 border-b border-[#2a2d3a] shrink-0">
-        <div className="w-8 h-8 rounded-lg bg-[#0ea5e9] flex items-center justify-center shrink-0 shadow-[0_0_12px_rgba(14,165,233,0.4)]">
-          <Music2 className="w-4 h-4 text-white" />
+      <div className="flex items-center gap-3 px-4 h-16 border-b border-[#2a2d3a] shrink-0">
+        <img
+          src="/logo.png"
+          alt="Music Machine"
+          className="w-9 h-9 rounded-lg shadow-[0_0_12px_rgba(212,160,23,0.3)]"
+        />
+        <div className="flex flex-col leading-tight">
+          <span className="text-sm font-bold text-white tracking-tight" style={{ fontFamily: 'Syne, sans-serif' }}>
+            Music Machine
+          </span>
+          <span className="text-[10px] text-[#d4a017]/70 tracking-widest uppercase font-medium">
+            M<sup>2</sup>
+          </span>
         </div>
-        <span className="text-sm font-bold text-white tracking-tight">ShoopDeDupe</span>
       </div>
 
       {/* Nav */}
@@ -63,7 +72,7 @@ export function Sidebar() {
               [
                 'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 relative',
                 isActive
-                  ? 'text-[#7dd3fc] bg-[#0ea5e9]/10 border-l-2 border-[#0ea5e9]'
+                  ? 'text-[#f0c95c] bg-[#d4a017]/10 border-l-2 border-[#d4a017]'
                   : 'text-slate-400 hover:text-slate-200 hover:bg-[#1a1d27] border-l-2 border-transparent',
               ].join(' ')
             }
@@ -74,8 +83,8 @@ export function Sidebar() {
         ))}
       </nav>
 
-      {/* MusicGrabber status */}
-      <div className="px-5 py-4 border-t border-[#2a2d3a] shrink-0">
+      {/* MusicGrabber status + copyright */}
+      <div className="px-5 py-4 border-t border-[#2a2d3a] shrink-0 space-y-3">
         <div className="flex items-center gap-2">
           <span
             className={`w-2 h-2 rounded-full shrink-0 ${
@@ -94,6 +103,7 @@ export function Sidebar() {
               : 'Disconnected'}
           </span>
         </div>
+        <p className="text-[10px] text-slate-600 text-center">&copy; 2026 Shawnee Digital</p>
       </div>
     </aside>
   )

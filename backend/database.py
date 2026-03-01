@@ -3,7 +3,7 @@ from pathlib import Path
 from contextlib import contextmanager
 import os
 
-DB_PATH = Path(os.environ.get("DB_PATH", "/data/plex-dedup.db"))
+DB_PATH = Path(os.environ.get("DB_PATH", "/data/music-machine.db"))
 
 
 def init_db():

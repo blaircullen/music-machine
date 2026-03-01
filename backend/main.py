@@ -88,12 +88,12 @@ async def lifespan(app: FastAPI):
     )
     scheduler_thread.start()
 
-    logger.info("plex-dedup backend ready")
+    logger.info("music-machine backend ready")
     yield
-    logger.info("plex-dedup backend shutting down")
+    logger.info("music-machine backend shutting down")
 
 
-app = FastAPI(title="plex-dedup", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="music-machine", version="2.0.0", lifespan=lifespan)
 
 # Import and register all routers
 from routes import scan, dupes, upgrades, trash, stats, jobs, settings, reorg, playlists, tagger

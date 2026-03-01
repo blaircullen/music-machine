@@ -204,10 +204,10 @@ export default function Dashboard() {
 
       {/* Active scan panel */}
       {scanState.running && (
-        <div className="rounded-xl bg-[#1a1d27] border border-[#0ea5e9]/30 p-5 shadow-[0_0_20px_rgba(14,165,233,0.1)]">
+        <div className="rounded-xl bg-[#1a1d27] border border-[#d4a017]/30 p-5 shadow-[0_0_20px_rgba(212,160,23,0.1)]">
           <div className="flex items-center gap-2 mb-3">
-            <div className="w-2 h-2 rounded-full bg-[#0ea5e9] animate-pulse" />
-            <span className="text-sm font-medium text-[#7dd3fc]">
+            <div className="w-2 h-2 rounded-full bg-[#d4a017] animate-pulse" />
+            <span className="text-sm font-medium text-[#f0c95c]">
               {PHASE_LABELS[scanState.phase] ?? scanState.phase ?? 'Working...'}
             </span>
           </div>
@@ -358,7 +358,7 @@ export default function Dashboard() {
                   {chartData.map((entry, i) => (
                     <Cell
                       key={i}
-                      fill={FORMAT_COLORS[entry.format.toLowerCase()] ?? '#0ea5e9'}
+                      fill={FORMAT_COLORS[entry.format.toLowerCase()] ?? '#d4a017'}
                     />
                   ))}
                 </Bar>
@@ -438,19 +438,19 @@ export default function Dashboard() {
       </div>
       {/* Library Reorg panel */}
       <div className={`rounded-xl bg-[#1a1d27] border p-5 transition-colors duration-300 ${
-        reorgStatus.running ? 'border-[#0ea5e9]/30 shadow-[0_0_20px_rgba(14,165,233,0.08)]' : 'border-[#2a2d3a]'
+        reorgStatus.running ? 'border-[#d4a017]/30 shadow-[0_0_20px_rgba(212,160,23,0.08)]' : 'border-[#2a2d3a]'
       }`}>
         {/* Header row */}
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 min-w-0">
-            <div className={`shrink-0 rounded-lg p-2.5 ${reorgStatus.running ? 'bg-[#0ea5e9]/15 text-[#38bdf8]' : 'bg-[#0ea5e9]/10 text-[#7dd3fc]'}`}>
+            <div className={`shrink-0 rounded-lg p-2.5 ${reorgStatus.running ? 'bg-[#d4a017]/15 text-[#e6b422]' : 'bg-[#d4a017]/10 text-[#f0c95c]'}`}>
               <FolderSync className={`w-5 h-5 ${reorgStatus.running ? 'animate-spin' : ''}`} style={reorgStatus.running ? { animationDuration: '3s' } : {}} />
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <p className="text-sm font-semibold text-slate-200">Library Reorg</p>
                 {reorgStatus.running && (
-                  <span className="text-xs text-[#7dd3fc] font-medium">
+                  <span className="text-xs text-[#f0c95c] font-medium">
                     {REORG_PHASE_LABELS[reorgStatus.phase] ?? reorgStatus.phase ?? 'Working...'}
                   </span>
                 )}
@@ -468,7 +468,7 @@ export default function Dashboard() {
                       {' · '}
                       <span className="text-slate-400">{reorgStatus.last_run.moved} moved</span>
                       {reorgStatus.last_run.inbox_moved > 0 && (
-                        <> · <span className="text-[#7dd3fc]">{reorgStatus.last_run.inbox_moved} from inbox</span></>
+                        <> · <span className="text-[#f0c95c]">{reorgStatus.last_run.inbox_moved} from inbox</span></>
                       )}
                       {' · '}
                       {reorgStatus.last_run.skipped} skipped
@@ -520,7 +520,7 @@ export default function Dashboard() {
                 <span className="text-slate-500">moved</span>
               </span>
               {reorgStatus.inbox_moved > 0 && (
-                <span className="flex items-center gap-1 text-[#7dd3fc]">
+                <span className="flex items-center gap-1 text-[#f0c95c]">
                   <span className="font-bold tabular-nums">{reorgStatus.inbox_moved}</span>
                   <span className="text-slate-500">from inbox</span>
                 </span>

@@ -1,4 +1,4 @@
-# ShoopDeDupe (plex-dedup)
+# Music Machine (M²)
 
 Music library deduplication & quality upgrade tool for Plex.
 
@@ -18,8 +18,8 @@ Python 3.12, FastAPI, SQLite, React 19, Vite 7, Tailwind CSS v4
 
 ```bash
 ssh-add --apple-load-keychain 2>/dev/null
-rsync -av frontend/src/ sunygxc@10.0.0.75:/home/sunygxc/projects/plex-dedup/frontend/src/
-ssh vm101 "cd /home/sunygxc/projects/plex-dedup && docker compose build --no-cache && docker compose up -d"
+rsync -av frontend/src/ sunygxc@10.0.0.75:/home/sunygxc/projects/music-machine/frontend/src/
+ssh vm101 "cd /home/sunygxc/projects/music-machine && docker compose build --no-cache && docker compose up -d"
 ```
 
 Note: `ssh-add --apple-load-keychain` must run in the same shell session before SSH commands.
@@ -28,11 +28,11 @@ Note: `ssh-add --apple-load-keychain` must run in the same shell session before 
 
 ```bash
 npm --prefix frontend run build
-scp frontend/dist/index.html frontend/dist/assets/*.{js,css} sunygxc@10.0.0.75:~/projects/plex-dedup/frontend/dist/...
-ssh vm101 'docker restart plex-dedup'
+scp frontend/dist/index.html frontend/dist/assets/*.{js,css} sunygxc@10.0.0.75:~/projects/music-machine/frontend/dist/...
+ssh vm101 'docker restart music-machine'
 ```
 
-For backend Python changes: scp the .py file + `docker restart plex-dedup` (no rebuild needed if not adding new deps).
+For backend Python changes: scp the .py file + `docker restart music-machine` (no rebuild needed if not adding new deps).
 
 ## Hard Constraints
 
@@ -86,7 +86,7 @@ No automated file actions — user wants to review all duplicate resolutions man
 ## Docker
 
 - Single container, multi-stage build (Node frontend → Python backend)
-- SQLite at `/data/plex-dedup.db`
+- SQLite at `/data/music-machine.db`
 - Music library at `/music` (NFS, read-write for trash moves)
 - Trash at `/trash` (`/mnt/music_dupes` on VM 101, local disk NOT NAS)
 - Port 8686
@@ -120,10 +120,11 @@ No automated file actions — user wants to review all duplicate resolutions man
 
 ## Design
 
-- **Theme:** Dark slate base, glassmorphism cards, sky blue (#0ea5e9) accent
+- **Theme:** Dark slate base, glassmorphism cards, amber/gold (#d4a017) accent
 - **Fonts:** Syne (headings) + Outfit (body) via Google Fonts
-- **Layout:** Fixed sidebar (72px collapsed, 240px hover expand)
+- **Layout:** Fixed 220px sidebar
 - **Deps:** lucide-react, motion, react-hot-toast, recharts
+- **Copyright:** 2026 Shawnee Digital
 
 ## Plex Library Scan
 

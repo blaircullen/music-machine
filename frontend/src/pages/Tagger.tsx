@@ -200,8 +200,8 @@ export default function Tagger() {
           className="px-4 py-2 rounded-xl text-sm font-medium transition-all duration-300 inline-flex items-center gap-2 bg-base-700/80 text-base-300 hover:bg-base-600 border border-glass-border backdrop-blur-md disabled:opacity-40 disabled:cursor-not-allowed shadow-sm hover:shadow-md"
         >
           {isRunning
-            ? <Loader2 className="w-4 h-4 animate-spin text-[#0ea5e9]" />
-            : <Wand2 className="w-4 h-4 text-[#0ea5e9]" />
+            ? <Loader2 className="w-4 h-4 animate-spin text-[#d4a017]" />
+            : <Wand2 className="w-4 h-4 text-[#d4a017]" />
           }
           {isRunning ? 'Tagging...' : 'Start Tagger'}
         </button>
@@ -215,14 +215,14 @@ export default function Tagger() {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8, transition: { duration: 0.2 } }}
           >
-            <GlassCard className="p-5 border-[#0ea5e9]/20 shadow-[0_0_20px_rgba(14,165,233,0.1)] relative overflow-hidden">
-              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-[#0ea5e9]/5 to-transparent -translate-x-full animate-[shimmer_2s_infinite]" />
+            <GlassCard className="p-5 border-[#d4a017]/20 shadow-[0_0_20px_rgba(212,160,23,0.1)] relative overflow-hidden">
+              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-[#d4a017]/5 to-transparent -translate-x-full animate-[shimmer_2s_infinite]" />
 
               {/* Header row */}
               <div className="flex items-center justify-between mb-4 relative z-10">
                 <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-xl bg-[#0ea5e9]/15 border border-[#0ea5e9]/20 shadow-[0_0_10px_rgba(14,165,233,0.2)]">
-                    <Wand2 className="w-4 h-4 text-[#7dd3fc] animate-pulse" />
+                  <div className="p-2 rounded-xl bg-[#d4a017]/15 border border-[#d4a017]/20 shadow-[0_0_10px_rgba(212,160,23,0.2)]">
+                    <Wand2 className="w-4 h-4 text-[#f0c95c] animate-pulse" />
                   </div>
                   <div>
                     <p className="text-sm font-semibold text-base-200">
@@ -316,7 +316,7 @@ export default function Tagger() {
             onClick={() => setFilterTab(tab.key)}
             className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all duration-300 flex items-center gap-2 relative ${
               filterTab === tab.key
-                ? 'text-[#7dd3fc] drop-shadow-[0_0_8px_rgba(14,165,233,0.5)]'
+                ? 'text-[#f0c95c] drop-shadow-[0_0_8px_rgba(212,160,23,0.5)]'
                 : 'text-base-500 hover:text-base-300 hover:bg-base-700/50'
             }`}
           >
@@ -324,7 +324,7 @@ export default function Tagger() {
             {tab.count > 0 && (
               <span className={`text-xs px-1.5 py-0.5 rounded-md ${
                 filterTab === tab.key
-                  ? 'bg-[#0ea5e9]/20 text-[#7dd3fc] font-bold'
+                  ? 'bg-[#d4a017]/20 text-[#f0c95c] font-bold'
                   : 'bg-base-800/80'
               }`}>
                 {tab.count}

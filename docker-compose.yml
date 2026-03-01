@@ -1,7 +1,7 @@
 services:
-  plex-dedup:
+  music-machine:
     build: .
-    container_name: plex-dedup
+    container_name: music-machine
     ports:
       - "8686:8686"
     volumes:
@@ -13,6 +13,6 @@ services:
       - MUSIC_PATH=/music
       - TRASH_PATH=/trash
       - STAGING_PATH=/staging
-      - DB_PATH=/data/plex-dedup.db
+      - DB_PATH=/data/music-machine.db
       - MUSICGRABBER_URL=http://10.0.0.75:38274
     restart: unless-stopped

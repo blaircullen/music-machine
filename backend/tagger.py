@@ -25,11 +25,11 @@ from scanner import AUDIO_EXTENSIONS
 
 logger = logging.getLogger(__name__)
 
-ACOUSTID_API_KEY = "KQVT4r8eOJ"
+ACOUSTID_API_KEY = os.environ.get("ACOUSTID_API_KEY", "Yx40zTgSFD")
 ACOUSTID_MIN_SCORE = 0.5
 
 # Set a descriptive user-agent per MusicBrainz API requirements
-musicbrainzngs.set_useragent("ShoopDeDupe-MetaTagger", "1.0", "https://github.com/shoopdedup")
+musicbrainzngs.set_useragent("MusicMachine-MetaTagger", "1.0", "https://github.com/blaircullen/music-machine")
 
 
 # ---------------------------------------------------------------------------
@@ -45,17 +45,17 @@ def lookup_acoustid(fingerprint: str, duration: float) -> list[dict]:
     import urllib.request
     import urllib.parse
 
-    params = urllib.parse.urlencode({
+    post_data = urllib.parse.urlencode({
         "client": ACOUSTID_API_KEY,
         "fingerprint": fingerprint,
         "duration": int(duration),
         "meta": "recordings",
         "format": "json",
-    })
-    url = f"https://api.acoustid.org/v2/lookup?{params}"
+    }).encode("utf-8")
+    url = "https://api.acoustid.org/v2/lookup"
 
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "ShoopDeDupe-MetaTagger/1.0"})
+        req = urllib.request.Request(url, data=post_data, headers={"User-Agent": "MusicMachine-MetaTagger/1.0"})
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read())
     except Exception as e:
@@ -95,7 +95,7 @@ def lookup_musicbrainz(recording_id: str) -> dict | None:
     try:
         result = musicbrainzngs.get_recording_by_id(
             recording_id,
-            includes=["releases", "artist-credits", "release-groups"],
+            includes=["releases", "artist-credits"],
         )
     except Exception as e:
         logger.warning(f"MusicBrainz lookup failed for {recording_id}: {e}")
@@ -133,9 +133,20 @@ def lookup_musicbrainz(recording_id: str) -> dict | None:
     date = best_release.get("date", "")
     release_id = best_release.get("id", "")
 
-    # Release group
-    rg = best_release.get("release-group", {})
-    release_group_id = rg.get("id")
+    # Release group — not embedded in recording query results,
+    # so fetch from the release itself
+    release_group_id = None
+    rel_group = best_release.get("release-group", {})
+    release_group_id = rel_group.get("id")
+    if not release_group_id and release_id:
+        try:
+            rel_result = musicbrainzngs.get_release_by_id(
+                release_id, includes=["release-groups"]
+            )
+            rel_group = rel_result.get("release", {}).get("release-group", {})
+            release_group_id = rel_group.get("id")
+        except Exception as e:
+            logger.debug(f"Release group lookup failed for {release_id}: {e}")
 
     # Track position
     track_number = None
@@ -200,8 +211,8 @@ def _pick_best_release(releases: list[dict]) -> dict | None:
 # ---------------------------------------------------------------------------
 
 
-def fetch_cover_art(release_group_id: str) -> bytes | None:
-    """Fetch front cover art from Cover Art Archive. Returns image bytes or None."""
+def fetch_cover_art(release_group_id: str) -> tuple[bytes, str] | None:
+    """Fetch front cover art from Cover Art Archive. Returns (image_bytes, mime_type) or None."""
     import urllib.request
 
     # Try 500px thumbnail first, then full image
@@ -212,10 +223,13 @@ def fetch_cover_art(release_group_id: str) -> bytes | None:
 
     for url in urls:
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "ShoopDeDupe-MetaTagger/1.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": "MusicMachine-MetaTagger/1.0"})
             with urllib.request.urlopen(req, timeout=20) as resp:
                 if resp.status == 200:
-                    return resp.read()
+                    content_type = resp.headers.get("Content-Type", "image/jpeg")
+                    # Normalize to just the MIME type (strip params like charset)
+                    mime = content_type.split(";")[0].strip()
+                    return resp.read(), mime
         except Exception:
             continue
 
@@ -240,6 +254,7 @@ def write_metadata(
     metadata: dict,
     cover_art_bytes: bytes | None = None,
     recording_id: str | None = None,
+    cover_art_mime: str = "image/jpeg",
 ) -> tuple[str, str]:
     """
     Write metadata tags to an audio file using mutagen.
@@ -252,11 +267,11 @@ def write_metadata(
         raise ValueError(f"Cannot open {file_path} with mutagen")
 
     if isinstance(audio, FLAC):
-        _write_flac(audio, metadata, cover_art_bytes, recording_id)
+        _write_flac(audio, metadata, cover_art_bytes, recording_id, cover_art_mime)
     elif isinstance(audio, MP3):
-        _write_mp3(audio, file_path, metadata, cover_art_bytes, recording_id)
+        _write_mp3(audio, file_path, metadata, cover_art_bytes, recording_id, cover_art_mime)
     elif isinstance(audio, MP4):
-        _write_mp4(audio, metadata, cover_art_bytes, recording_id)
+        _write_mp4(audio, metadata, cover_art_bytes, recording_id, cover_art_mime)
     else:
         # Vorbis/Opus — use same keys as FLAC
         _write_vorbis(audio, metadata, recording_id)
@@ -266,7 +281,8 @@ def write_metadata(
     return sha256_before, sha256_after
 
 
-def _write_flac(audio: FLAC, meta: dict, art: bytes | None, rec_id: str | None):
+def _write_flac(audio: FLAC, meta: dict, art: bytes | None, rec_id: str | None,
+                art_mime: str = "image/jpeg"):
     if meta.get("artist"):
         audio["artist"] = [meta["artist"]]
     if meta.get("title"):
@@ -286,14 +302,14 @@ def _write_flac(audio: FLAC, meta: dict, art: bytes | None, rec_id: str | None):
     if art:
         pic = Picture()
         pic.type = 3  # Front cover
-        pic.mime = "image/jpeg"
+        pic.mime = art_mime
         pic.data = art
-        # Remove existing front covers
         audio.clear_pictures()
         audio.add_picture(pic)
 
 
-def _write_mp3(audio: MP3, file_path: str, meta: dict, art: bytes | None, rec_id: str | None):
+def _write_mp3(audio: MP3, file_path: str, meta: dict, art: bytes | None, rec_id: str | None,
+               art_mime: str = "image/jpeg"):
     if audio.tags is None:
         audio.add_tags()
     tags = audio.tags
@@ -318,11 +334,12 @@ def _write_mp3(audio: MP3, file_path: str, meta: dict, art: bytes | None, rec_id
 
     if art:
         tags["APIC:Front Cover"] = APIC(
-            encoding=3, mime="image/jpeg", type=3, desc="Front Cover", data=art
+            encoding=3, mime=art_mime, type=3, desc="Front Cover", data=art
         )
 
 
-def _write_mp4(audio: MP4, meta: dict, art: bytes | None, rec_id: str | None):
+def _write_mp4(audio: MP4, meta: dict, art: bytes | None, rec_id: str | None,
+               art_mime: str = "image/jpeg"):
     if audio.tags is None:
         audio.add_tags()
 
@@ -343,9 +360,8 @@ def _write_mp4(audio: MP4, meta: dict, art: bytes | None, rec_id: str | None):
         ]
 
     if art:
-        audio.tags["covr"] = [
-            MP4Cover(art, imageformat=MP4Cover.FORMAT_JPEG)
-        ]
+        img_fmt = MP4Cover.FORMAT_PNG if "png" in art_mime else MP4Cover.FORMAT_JPEG
+        audio.tags["covr"] = [MP4Cover(art, imageformat=img_fmt)]
 
 
 def _write_vorbis(audio, meta: dict, rec_id: str | None):
@@ -485,10 +501,13 @@ def tag_file(file_path: str, force: bool = False, dry_run: bool = False,
 
     # Step 4: Cover art
     cover_art = None
+    cover_art_mime = "image/jpeg"
     release_group_id = metadata.get("release_group_id")
     if release_group_id:
         result["cover_art_url"] = f"https://coverartarchive.org/release-group/{release_group_id}/front-500"
-        cover_art = fetch_cover_art(release_group_id)
+        art_result = fetch_cover_art(release_group_id)
+        if art_result:
+            cover_art, cover_art_mime = art_result
 
     # Step 5: Write tags
     if dry_run:
@@ -497,7 +516,7 @@ def tag_file(file_path: str, force: bool = False, dry_run: bool = False,
 
     try:
         sha_before, sha_after = write_metadata(
-            file_path, metadata, cover_art, recording_id
+            file_path, metadata, cover_art, recording_id, cover_art_mime
         )
         result["status"] = "tagged"
         result["sha256_before"] = sha_before
@@ -575,4 +594,6 @@ def tag_directory(
             yield {"type": "result", "result": result}
 
             # Rate limit: 1 req/sec between files (MusicBrainz courtesy)
-            time.sleep(1.0)
+            # Skip sleep for files that didn't hit external APIs
+            if result["status"] not in ("skipped",):
+                time.sleep(1.0)

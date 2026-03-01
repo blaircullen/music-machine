@@ -14,7 +14,7 @@ type BadgeVariant =
 
 const VARIANT_CLASSES: Record<BadgeVariant, string> = {
   default: 'bg-[#2a2d3a] text-slate-300 border border-[#3a3d4a]',
-  purple: 'bg-[#0ea5e9]/15 text-[#7dd3fc] border border-[#0ea5e9]/30',
+  purple: 'bg-[#d4a017]/15 text-[#f0c95c] border border-[#d4a017]/30',
   green: 'bg-[#22c55e]/15 text-[#4ade80] border border-[#22c55e]/30',
   amber: 'bg-[#f59e0b]/15 text-[#fbbf24] border border-[#f59e0b]/30',
   red: 'bg-[#ef4444]/15 text-[#f87171] border border-[#ef4444]/30',

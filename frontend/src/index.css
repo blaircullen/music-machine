@@ -12,11 +12,11 @@
   --color-text-secondary: #94a3b8;
   --color-text-muted: #64748b;
 
-  /* Accent — sky blue primary */
-  --color-accent: #0ea5e9;
-  --color-accent-dim: rgba(14, 165, 233, 0.15);
-  --color-accent-glow: rgba(14, 165, 233, 0.4);
-  --color-accent-light: #7dd3fc;
+  /* Accent — amber/gold from M² logo */
+  --color-accent: #d4a017;
+  --color-accent-dim: rgba(212, 160, 23, 0.15);
+  --color-accent-glow: rgba(212, 160, 23, 0.4);
+  --color-accent-light: #f0c95c;
 
   /* Semantic */
   --color-success: #22c55e;
@@ -62,9 +62,9 @@ body::before {
   position: fixed;
   inset: 0;
   background:
-    radial-gradient(circle at 20% 60%, rgba(14, 165, 233, 0.06) 0%, transparent 45%),
+    radial-gradient(circle at 20% 60%, rgba(212, 160, 23, 0.05) 0%, transparent 45%),
     radial-gradient(circle at 80% 20%, rgba(34, 197, 94, 0.04) 0%, transparent 45%),
-    radial-gradient(circle at 50% 90%, rgba(59, 130, 246, 0.04) 0%, transparent 50%);
+    radial-gradient(circle at 50% 90%, rgba(212, 160, 23, 0.03) 0%, transparent 50%);
   pointer-events: none;
   z-index: 0;
 }

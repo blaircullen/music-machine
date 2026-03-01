@@ -214,7 +214,11 @@ async def start_tagger(
     if tagger_status["running"]:
         return {"ok": False, "error": "Tagger already in progress"}
 
-    music_path = Path(path) if path else Path(os.environ.get("MUSIC_PATH", "/music"))
+    base_music_path = Path(os.environ.get("MUSIC_PATH", "/music")).resolve()
+    music_path = Path(path).resolve() if path else base_music_path
+    if not music_path.is_relative_to(base_music_path):
+        return {"ok": False, "error": "Path must be within music directory"}
+
     t = threading.Thread(
         target=_run_tagger,
         args=(music_path, force, dry_run),
