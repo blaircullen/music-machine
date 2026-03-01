@@ -31,6 +31,7 @@ tagger_status = {
 }
 
 _tagger_lock = threading.Lock()
+_tagger_stop = threading.Event()
 _event_loop: asyncio.AbstractEventLoop | None = None
 
 
@@ -73,6 +74,8 @@ def _run_tagger(music_path: Path, force: bool = False, dry_run: bool = False):
     except Exception as e:
         logger.error(f"Failed to create tagger job: {e}")
 
+    _tagger_stop.clear()
+
     tagger_status.update({
         "running": True,
         "phase": "scanning",
@@ -89,6 +92,10 @@ def _run_tagger(music_path: Path, force: bool = False, dry_run: bool = False):
 
     try:
         for update in tag_directory(str(music_path), force=force, dry_run=dry_run):
+            if _tagger_stop.is_set():
+                logger.info("Tagger stopped by user")
+                break
+
             utype = update.get("type")
 
             if utype == "error":
@@ -167,19 +174,22 @@ def _run_tagger(music_path: Path, force: bool = False, dry_run: bool = False):
                 except Exception as e:
                     logger.warning(f"Failed to record tag result: {e}")
 
-        # Complete
+        # Complete or stopped
+        final_phase = "stopped" if _tagger_stop.is_set() else "complete"
+        final_status = "failed" if _tagger_stop.is_set() else "completed"
+
         if job_id:
             with get_db() as db:
                 db.execute(
-                    "UPDATE jobs SET status='completed', "
+                    f"UPDATE jobs SET status='{final_status}', "
                     "details=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
                     (
-                        json.dumps({"tagged": tagger_status["tagged"], "failed": tagger_status["failed"], "skipped": tagger_status["skipped"]}),
+                        json.dumps({"tagged": tagger_status["tagged"], "failed": tagger_status["failed"], "skipped": tagger_status["skipped"], "stopped": _tagger_stop.is_set()}),
                         job_id,
                     ),
                 )
 
-        _update_status(phase="complete", current_file=None, running=False)
+        _update_status(phase=final_phase, current_file=None, running=False)
         _broadcast_sync("stats_update", {"event": "tagger_complete"})
 
     except Exception as e:
@@ -225,6 +235,15 @@ async def start_tagger(
         daemon=True,
     )
     t.start()
+    return {"ok": True}
+
+
+@router.post("/stop")
+async def stop_tagger():
+    """Stop the running tagger."""
+    if not tagger_status["running"]:
+        return {"ok": False, "error": "Tagger is not running"}
+    _tagger_stop.set()
     return {"ok": True}
 
 

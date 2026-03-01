@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
-import { Wand2, CheckCircle, XCircle, SkipForward, RefreshCw, Loader2, Clock, FileAudio } from 'lucide-react'
+import { Wand2, CheckCircle, XCircle, X, SkipForward, RefreshCw, Loader2, Clock, FileAudio } from 'lucide-react'
 import { GlassCard, StatCard, Button, Badge, ProgressBar, EmptyState, SkeletonTable, toast } from '../components/ui'
 import { useTaggerStatus } from '../hooks/useTaggerStatus'
 
@@ -124,6 +124,20 @@ export default function Tagger() {
     }
   }
 
+  const handleStop = async () => {
+    try {
+      const res = await fetch('/api/tagger/stop', { method: 'POST' })
+      const data = await res.json()
+      if (data.error) {
+        toast.error(data.error)
+        return
+      }
+      toast.success('Tagger stopping...')
+    } catch {
+      toast.error('Failed to stop tagger')
+    }
+  }
+
   const handleRetry = useCallback(async (id: number) => {
     setActionInProgress(prev => new Set(prev).add(id))
     try {
@@ -194,17 +208,25 @@ export default function Tagger() {
             Identify tracks via acoustic fingerprint and enrich metadata from MusicBrainz
           </p>
         </div>
-        <button
-          onClick={handleStart}
-          disabled={isRunning}
-          className="px-4 py-2 rounded-xl text-sm font-medium transition-all duration-300 inline-flex items-center gap-2 bg-base-700/80 text-base-300 hover:bg-base-600 border border-glass-border backdrop-blur-md disabled:opacity-40 disabled:cursor-not-allowed shadow-sm hover:shadow-md"
-        >
-          {isRunning
-            ? <Loader2 className="w-4 h-4 animate-spin text-[#d4a017]" />
-            : <Wand2 className="w-4 h-4 text-[#d4a017]" />
-          }
-          {isRunning ? 'Tagging...' : 'Start Tagger'}
-        </button>
+        <div className="flex gap-2">
+          {isRunning && (
+            <Button variant="danger" onClick={handleStop}>
+              <X className="w-4 h-4" />
+              Stop
+            </Button>
+          )}
+          <button
+            onClick={handleStart}
+            disabled={isRunning}
+            className="px-4 py-2 rounded-xl text-sm font-medium transition-all duration-300 inline-flex items-center gap-2 bg-base-700/80 text-base-300 hover:bg-base-600 border border-glass-border backdrop-blur-md disabled:opacity-40 disabled:cursor-not-allowed shadow-sm hover:shadow-md"
+          >
+            {isRunning
+              ? <Loader2 className="w-4 h-4 animate-spin text-[#d4a017]" />
+              : <Wand2 className="w-4 h-4 text-[#d4a017]" />
+            }
+            {isRunning ? 'Tagging...' : 'Start Tagger'}
+          </button>
+        </div>
       </div>
 
       {/* Progress panel */}
