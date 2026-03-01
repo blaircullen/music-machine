@@ -49,16 +49,11 @@ export function Sidebar() {
         <img
           src="/logo.png"
           alt="Music Machine"
-          className="w-9 h-9 rounded-lg shadow-[0_0_12px_rgba(212,160,23,0.3)]"
+          className="w-9 h-9 rounded-lg shadow-[0_0_12px_rgba(212,160,23,0.3)] object-cover scale-[1.15]"
         />
-        <div className="flex flex-col leading-tight">
-          <span className="text-sm font-bold text-white tracking-tight" style={{ fontFamily: 'Syne, sans-serif' }}>
-            Music Machine
-          </span>
-          <span className="text-[10px] text-[#d4a017]/70 tracking-widest uppercase font-medium">
-            M<sup>2</sup>
-          </span>
-        </div>
+        <span className="text-sm font-bold text-white tracking-tight" style={{ fontFamily: 'Syne, sans-serif' }}>
+          Music Machine
+        </span>
       </div>
 
       {/* Nav */}
