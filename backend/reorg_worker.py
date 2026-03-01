@@ -19,7 +19,7 @@ from mutagen import File as MutagenFile
 logger = logging.getLogger(__name__)
 
 MUSIC_ROOT = os.environ.get("MUSIC_ROOT", "/music/FLAC")
-_raw_inbox = os.environ.get("INBOX_DIRS", "/music/MP3s,/music/iTunes")
+_raw_inbox = os.environ.get("INBOX_DIRS", "/music/MP3s,/music/iTunes,/music/Singles")
 INBOX_DIRS = [d.strip() for d in _raw_inbox.split(",") if d.strip()]
 INBOX_EXTS = {".flac"}
 AUDIO_EXTS = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".wma", ".aac"}
