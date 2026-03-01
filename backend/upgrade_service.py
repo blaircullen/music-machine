@@ -117,7 +117,9 @@ async def search_for_flac(
     """
     query = f"{artist} {title}" if not album else f"{artist} {album} {title}"
 
-    max_retries = 4
+    import asyncio as _asyncio
+
+    max_retries = 8
     async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT) as client:
         data = None
         for attempt in range(max_retries):
@@ -131,18 +133,20 @@ async def search_for_flac(
                     },
                 )
                 if resp.status_code == 429:
-                    wait = 2 ** attempt + 1  # 2, 3, 5, 9s
+                    wait = 3 ** attempt + 1  # 2, 4, 10, 28, 82... (capped at 30s)
+                    wait = min(wait, 30)
                     logger.info(f"429 rate limited for '{query}', retry {attempt+1}/{max_retries} in {wait}s")
-                    time.sleep(wait)
+                    await _asyncio.sleep(wait)
                     continue
                 resp.raise_for_status()
                 data = resp.json()
                 break
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429:
-                    wait = 2 ** attempt + 1
+                    wait = 3 ** attempt + 1
+                    wait = min(wait, 30)
                     logger.info(f"429 rate limited for '{query}', retry {attempt+1}/{max_retries} in {wait}s")
-                    time.sleep(wait)
+                    await _asyncio.sleep(wait)
                     continue
                 logger.warning(f"MusicGrabber search failed for '{query}': {e}")
                 return None
@@ -196,19 +200,27 @@ async def search_album(
     album: str,
     tracks: list[dict],
     timeout_s: int = 15,
+    inter_search_delay: float = 1.5,
 ) -> dict[int, dict]:
     """
     Search MusicGrabber for each track in an album group.
     Returns a dict keyed by track_id → best matching result dict.
 
     tracks: list of {id, title, track_number, format, bit_depth}
+    inter_search_delay: seconds to wait between track searches (rate limit protection)
     """
+    import asyncio as _asyncio
+
     results: dict[int, dict] = {}
 
-    for track in tracks:
+    for i, track in enumerate(tracks):
         track_id = track["id"]
         title = track.get("title") or ""
         is_flac_source = (track.get("format") or "").lower() == "flac"
+
+        # Throttle between searches to avoid 429s
+        if i > 0 and inter_search_delay > 0:
+            await _asyncio.sleep(inter_search_delay)
 
         match = await search_for_flac(
             artist=artist,

@@ -104,7 +104,7 @@ def init_db():
         defaults = [
             ("auto_resolve_threshold", "0.0"),
             ("upgrade_scan_limit", "0"),
-            ("upgrade_concurrency", "8"),
+            ("upgrade_concurrency", "2"),
             ("upgrade_include_flac_hires", "true"),
         ]
         for key, value in defaults:

@@ -793,6 +793,52 @@ def list_unscanned(limit: int = 500):
     return [dict(r) for r in rows]
 
 
+@router.post("/retry-skipped")
+def retry_skipped():
+    """Re-queue skipped items that don't already have a successful entry for the same track."""
+    with get_db() as db:
+        result = db.execute(
+            """DELETE FROM upgrade_queue
+               WHERE status = 'skipped'
+                 AND track_id IN (
+                     SELECT track_id FROM upgrade_queue
+                     WHERE status IN ('completed', 'found', 'approved', 'downloading')
+                 )"""
+        )
+        pruned = result.rowcount
+
+        result = db.execute(
+            """UPDATE upgrade_queue
+               SET status = 'pending', error_msg = NULL, updated_at = CURRENT_TIMESTAMP
+               WHERE status = 'skipped'"""
+        )
+        count = result.rowcount
+    return {"ok": True, "requeued": count, "pruned_duplicates": pruned}
+
+
+@router.post("/retry-failed")
+def retry_failed():
+    """Re-queue failed items that don't already have a successful entry for the same track."""
+    with get_db() as db:
+        result = db.execute(
+            """DELETE FROM upgrade_queue
+               WHERE status = 'failed'
+                 AND track_id IN (
+                     SELECT track_id FROM upgrade_queue
+                     WHERE status IN ('completed', 'found', 'approved', 'downloading')
+                 )"""
+        )
+        pruned = result.rowcount
+
+        result = db.execute(
+            """UPDATE upgrade_queue
+               SET status = 'pending', error_msg = NULL, updated_at = CURRENT_TIMESTAMP
+               WHERE status = 'failed'"""
+        )
+        count = result.rowcount
+    return {"ok": True, "requeued": count, "pruned_duplicates": pruned}
+
+
 @router.post("/approve-hi-res")
 def approve_hi_res_upgrades():
     """Approve only hi-res quality found items."""

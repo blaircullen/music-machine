@@ -111,8 +111,10 @@ No automated file actions — user wants to review all duplicate resolutions man
 - **Search:** `POST /api/search` with `{"query": "...", "source": "monochrome", "limit": 10}`
 - **Download:** `POST /api/download` with `{"video_id": ..., "source": "monochrome", "source_url": "...", "convert_to_flac": true}`
 - **Job status:** `GET /api/jobs/{job_id}` → `{status: "queued"|"downloading"|"completed"|"failed"}`
-- **429 retry:** `search_for_flac()` retries up to 4× with exponential backoff (2/3/5/9s)
-- **Concurrency:** `upgrade_concurrency` setting default 3 (reduced from 8 to avoid 429s)
+- **429 retry:** `search_for_flac()` retries up to 8× with base-3 exponential backoff (2/4/10/28s, capped at 30s), uses async sleep
+- **Concurrency:** `upgrade_concurrency` setting default 2 (reduced from 8 to avoid 429s)
+- **Inter-search throttle:** 1.5s delay between tracks within an album group
+- **Retry skipped:** `POST /api/upgrades/retry-skipped` re-queues rate-limited tracks for next scan
 - **Download pipeline:** 2-step (downloading → importing)
 - **File finding:** `_find_musicgrabber_download()` searches Singles dir → artist dir → broad mtime-based search (5min window)
 
