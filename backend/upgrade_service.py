@@ -117,20 +117,40 @@ async def search_for_flac(
     """
     query = f"{artist} {title}" if not album else f"{artist} {album} {title}"
 
+    max_retries = 4
     async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT) as client:
-        try:
-            resp = await client.post(
-                f"{MUSICGRABBER_URL}/api/search",
-                json={
-                    "query": query,
-                    "source": "monochrome",
-                    "limit": 10,
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            logger.warning(f"MusicGrabber search failed for '{query}': {e}")
+        data = None
+        for attempt in range(max_retries):
+            try:
+                resp = await client.post(
+                    f"{MUSICGRABBER_URL}/api/search",
+                    json={
+                        "query": query,
+                        "source": "monochrome",
+                        "limit": 10,
+                    },
+                )
+                if resp.status_code == 429:
+                    wait = 2 ** attempt + 1  # 2, 3, 5, 9s
+                    logger.info(f"429 rate limited for '{query}', retry {attempt+1}/{max_retries} in {wait}s")
+                    time.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    wait = 2 ** attempt + 1
+                    logger.info(f"429 rate limited for '{query}', retry {attempt+1}/{max_retries} in {wait}s")
+                    time.sleep(wait)
+                    continue
+                logger.warning(f"MusicGrabber search failed for '{query}': {e}")
+                return None
+            except Exception as e:
+                logger.warning(f"MusicGrabber search failed for '{query}': {e}")
+                return None
+        if data is None:
+            logger.warning(f"MusicGrabber search exhausted retries for '{query}'")
             return None
 
     results = data.get("results") or []

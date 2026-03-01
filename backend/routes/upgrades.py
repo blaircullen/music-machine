@@ -104,7 +104,7 @@ def _run_upgrade_search_worker(
     except Exception as e:
         logger.error(f"Failed to create upgrade_search job: {e}")
 
-    concurrency = int(_get_setting("upgrade_concurrency", "8"))
+    concurrency = int(_get_setting("upgrade_concurrency", "3"))
 
     upgrade_search_status.update({
         "running": True,
