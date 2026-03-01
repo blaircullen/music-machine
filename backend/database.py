@@ -98,6 +98,26 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_upgrade_queue_track_id ON upgrade_queue(track_id);
             CREATE INDEX IF NOT EXISTS idx_file_transactions_track_id ON file_transactions(track_id);
             CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+
+            CREATE TABLE IF NOT EXISTS tag_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                track_id INTEGER REFERENCES tracks(id),
+                file_path TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                acoustid_score REAL,
+                mb_recording_id TEXT,
+                mb_release_id TEXT,
+                matched_artist TEXT,
+                matched_title TEXT,
+                matched_album TEXT,
+                cover_art_url TEXT,
+                error_msg TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_tag_jobs_status ON tag_jobs(status);
+            CREATE INDEX IF NOT EXISTS idx_tag_jobs_file_path ON tag_jobs(file_path);
         """)
 
         # Insert default settings if not present

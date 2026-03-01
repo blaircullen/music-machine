@@ -100,6 +100,35 @@ export interface TrashStats {
   size_bytes: number
 }
 
+export interface TaggerStatus {
+  running: boolean
+  phase: 'idle' | 'scanning' | 'tagging' | 'complete' | 'failed'
+  processed: number
+  total: number
+  tagged: number
+  failed: number
+  skipped: number
+  current_file: string | null
+  elapsed_s: number
+}
+
+export interface TaggerResult {
+  id: number
+  track_id: number | null
+  file_path: string
+  status: 'pending' | 'matched' | 'tagged' | 'failed' | 'skipped'
+  acoustid_score: number | null
+  mb_recording_id: string | null
+  mb_release_id: string | null
+  matched_artist: string | null
+  matched_title: string | null
+  matched_album: string | null
+  cover_art_url: string | null
+  error_msg: string | null
+  created_at: string
+  updated_at: string
+}
+
 const BASE = '/api'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -200,4 +229,31 @@ export function emptyTrash(): Promise<{ deleted: number }> {
 
 export function getTrashStats(): Promise<TrashStats> {
   return request<TrashStats>('/trash/stats')
+}
+
+// Tagger
+export function postTaggerRun(opts?: { path?: string; force?: boolean; dry_run?: boolean }): Promise<{ ok: boolean; error?: string }> {
+  const params = new URLSearchParams()
+  if (opts?.path) params.set('path', opts.path)
+  if (opts?.force) params.set('force', 'true')
+  if (opts?.dry_run) params.set('dry_run', 'true')
+  const qs = params.toString()
+  return request<{ ok: boolean; error?: string }>(`/tagger/run${qs ? `?${qs}` : ''}`, { method: 'POST' })
+}
+
+export function getTaggerStatus(): Promise<TaggerStatus> {
+  return request<TaggerStatus>('/tagger/status')
+}
+
+export function getTaggerResults(status?: string): Promise<TaggerResult[]> {
+  const qs = status ? `?status=${status}` : ''
+  return request<TaggerResult[]>(`/tagger/results${qs}`)
+}
+
+export function retryTagJob(id: number): Promise<{ ok: boolean; status?: string; error?: string }> {
+  return request<{ ok: boolean; status?: string; error?: string }>(`/tagger/${id}/retry`, { method: 'POST' })
+}
+
+export function skipTagJob(id: number): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/tagger/${id}/skip`, { method: 'POST' })
 }

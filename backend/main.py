@@ -77,9 +77,10 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_event_loop()
 
     # Inject event loop reference into route modules that need it
-    from routes import scan as scan_mod, upgrades as upgrades_mod
+    from routes import scan as scan_mod, upgrades as upgrades_mod, tagger as tagger_mod
     scan_mod.set_event_loop(loop)
     upgrades_mod.set_event_loop(loop)
+    tagger_mod.set_event_loop(loop)
 
     # Start the daily scheduled scan thread
     scheduler_thread = threading.Thread(
@@ -95,7 +96,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="plex-dedup", version="2.0.0", lifespan=lifespan)
 
 # Import and register all routers
-from routes import scan, dupes, upgrades, trash, stats, jobs, settings, reorg, playlists
+from routes import scan, dupes, upgrades, trash, stats, jobs, settings, reorg, playlists, tagger
 
 app.include_router(scan.router)
 app.include_router(dupes.router)
@@ -106,6 +107,7 @@ app.include_router(jobs.router)
 app.include_router(settings.router)
 app.include_router(reorg.router)
 app.include_router(playlists.router)
+app.include_router(tagger.router)
 
 
 @app.websocket("/ws")

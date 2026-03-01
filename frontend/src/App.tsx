@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard'
 import Library from './pages/Library'
 import JobLog from './pages/JobLog'
 import Upgrades from './pages/Upgrades'
+import Tagger from './pages/Tagger'
 
 export default function App() {
   return (
@@ -16,6 +17,7 @@ export default function App() {
             <Route path="/library" element={<Library />} />
             <Route path="/jobs" element={<JobLog />} />
             <Route path="/upgrades" element={<Upgrades />} />
+            <Route path="/tagger" element={<Tagger />} />
           </Routes>
         </main>
       </div>
