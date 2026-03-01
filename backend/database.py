@@ -52,10 +52,10 @@ def init_db():
                 search_query TEXT,
                 status TEXT DEFAULT 'pending',
                 match_quality TEXT,
-                slskd_search_id TEXT,
-                slskd_username TEXT,
-                slskd_filename TEXT,
-                slskd_file_size INTEGER,
+                mg_track_id TEXT,
+                mg_job_id TEXT,
+                mg_quality TEXT,
+                mg_source_url TEXT,
                 staging_path TEXT,
                 sha256_original TEXT,
                 sha256_new TEXT,
@@ -102,7 +102,6 @@ def init_db():
 
         # Insert default settings if not present
         defaults = [
-            ("slskd_search_timeout_s", "20"),
             ("auto_resolve_threshold", "0.0"),
             ("upgrade_scan_limit", "0"),
             ("upgrade_concurrency", "8"),
@@ -113,6 +112,25 @@ def init_db():
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                 (key, value)
             )
+
+        # Migrate upgrade_queue from slskd columns to MusicGrabber columns
+        _migrate_upgrade_queue(db)
+
+
+def _migrate_upgrade_queue(db):
+    """Add MusicGrabber columns to upgrade_queue if they don't exist (migrate from slskd)."""
+    cursor = db.execute("PRAGMA table_info(upgrade_queue)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+
+    new_cols = {
+        "mg_track_id": "TEXT",
+        "mg_job_id": "TEXT",
+        "mg_quality": "TEXT",
+        "mg_source_url": "TEXT",
+    }
+    for col, col_type in new_cols.items():
+        if col not in existing_cols:
+            db.execute(f"ALTER TABLE upgrade_queue ADD COLUMN {col} {col_type}")
 
 
 @contextmanager

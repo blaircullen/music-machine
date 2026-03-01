@@ -40,16 +40,16 @@ upgrade_search_status = {
     "downloading": 0,
     "completed": 0,
     "failed": 0,
-    # Per-item download detail (populated during download phase)
+    # Per-item download detail
     "current_track": None,        # "Artist - Title"
     "current_artist": None,
     "current_title": None,
     "current_album": None,
-    "current_step": None,         # "slskd" | "transferring" | "importing"
-    "current_bytes": 0,           # bytes transferred from slskd
-    "current_total_bytes": 0,     # total file size in bytes
-    "download_index": 0,          # 1-based current item number
-    "download_total": 0,          # total items in this download run
+    "current_step": None,         # "downloading" | "importing"
+    "current_bytes": 0,
+    "current_total_bytes": 0,
+    "download_index": 0,
+    "download_total": 0,
 }
 
 _search_lock = threading.Lock()
@@ -88,8 +88,7 @@ def _run_upgrade_search_worker(
     artist_filter: str | None = None,
 ):
     """
-    Background thread: search slskd for FLAC upgrades of pending lossy and CD-quality FLAC tracks.
-    Uses album-level parallel searching to reduce search time and API calls.
+    Background thread: search MusicGrabber (Monochrome/Tidal) for FLAC upgrades.
     """
     if not _search_lock.acquire(blocking=False):
         logger.warning("Upgrade search already running")
@@ -105,7 +104,6 @@ def _run_upgrade_search_worker(
     except Exception as e:
         logger.error(f"Failed to create upgrade_search job: {e}")
 
-    timeout_s = int(_get_setting("slskd_search_timeout_s", "15"))
     concurrency = int(_get_setting("upgrade_concurrency", "8"))
 
     upgrade_search_status.update({
@@ -129,7 +127,6 @@ def _run_upgrade_search_worker(
             fmt_clause = f"t.format IN ({lossy_placeholders})"
             params = list(LOSSY_FORMATS)
         else:
-            # Specific lossy format (mp3, aac, etc.)
             fmt_clause = "t.format = ?"
             params = [format_filter]
 
@@ -161,12 +158,11 @@ def _run_upgrade_search_worker(
 
         total = len(candidates)
         logger.info(
-            f"Upgrade search: {total} tracks to search "
-            f"(lossy + CD-quality FLAC), concurrency={concurrency}"
+            f"Upgrade search: {total} tracks to search, concurrency={concurrency}"
         )
 
         # Pre-create queue entries for all candidates
-        track_to_queue: dict[int, int] = {}  # track_id → queue_id
+        track_to_queue: dict[int, int] = {}
         for track in candidates:
             track_dict = dict(track)
             track_id = track_dict["id"]
@@ -191,7 +187,7 @@ def _run_upgrade_search_worker(
                     queue_id = cursor.lastrowid
                 track_to_queue[track_id] = queue_id
 
-        # Group candidates by (artist, album); tracks with no album use individual search
+        # Group candidates by (artist, album)
         grouped: dict[tuple, list[dict]] = defaultdict(list)
         individual: list[dict] = []
         for track in candidates:
@@ -218,16 +214,14 @@ def _run_upgrade_search_worker(
         from upgrade_service import search_album, search_for_flac
 
         def _search_group(group_key: tuple, tracks_in_group: list[dict]) -> dict[int, dict | None]:
-            """Worker: run one album-level search, returns track_id → result|None."""
             artist, album = group_key
             try:
-                return asyncio.run(search_album(artist, album, tracks_in_group, timeout_s))
+                return asyncio.run(search_album(artist, album, tracks_in_group))
             except Exception as e:
                 logger.error(f"Album search error for '{artist} - {album}': {e}")
                 return {}
 
         def _search_individual(track_dict: dict) -> tuple[int, dict | None]:
-            """Worker: run one individual track search, returns (track_id, result|None)."""
             track_id = track_dict["id"]
             artist = track_dict.get("artist") or ""
             album = track_dict.get("album") or ""
@@ -239,7 +233,6 @@ def _run_upgrade_search_worker(
                         artist=artist,
                         album=album,
                         title=title,
-                        timeout_s=timeout_s,
                         hi_res_only=is_flac,
                     )
                 )
@@ -249,7 +242,6 @@ def _run_upgrade_search_worker(
                 return track_id, None
 
         def _upsert_result(track_id: int, result: dict | None):
-            """Write search result to upgrade_queue and update status counters."""
             queue_id = track_to_queue.get(track_id)
             if queue_id is None:
                 return
@@ -261,18 +253,16 @@ def _run_upgrade_search_worker(
                         """UPDATE upgrade_queue
                            SET status = 'found',
                                match_quality = ?,
-                               slskd_search_id = ?,
-                               slskd_username = ?,
-                               slskd_filename = ?,
-                               slskd_file_size = ?,
+                               mg_track_id = ?,
+                               mg_quality = ?,
+                               mg_source_url = ?,
                                updated_at = CURRENT_TIMESTAMP
                            WHERE id = ?""",
                         (
                             result["match_quality"],
-                            result["slskd_search_id"],
-                            result["username"],
-                            result["filename"],
-                            result["file_size"],
+                            result["mg_track_id"],
+                            result.get("quality"),
+                            result.get("source_url"),
                             queue_id,
                         ),
                     )
@@ -283,14 +273,12 @@ def _run_upgrade_search_worker(
                         (queue_id,),
                     )
 
-        # Submit album groups in parallel
+        # Submit searches in parallel
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
-            # Album group futures
             album_futures = {
                 pool.submit(_search_group, key, tracks): tracks
                 for key, tracks in grouped.items()
             }
-            # Individual track futures
             individual_futures = {
                 pool.submit(_search_individual, track): track
                 for track in individual
@@ -301,7 +289,7 @@ def _run_upgrade_search_worker(
                 try:
                     if future in album_futures:
                         tracks_in_group = album_futures[future]
-                        group_results = future.result()  # dict[track_id → result|None]
+                        group_results = future.result()
                         for track_dict in tracks_in_group:
                             tid = track_dict["id"]
                             _upsert_result(tid, group_results.get(tid))
@@ -350,7 +338,7 @@ def _run_upgrade_search_worker(
 
 def _run_download_worker():
     """
-    Background thread: download approved slskd items, verify, import to library.
+    Background thread: download approved items via MusicGrabber, verify, import to library.
     """
     if not _download_lock.acquire(blocking=False):
         logger.warning("Download worker already running")
@@ -366,7 +354,6 @@ def _run_download_worker():
     except Exception as e:
         logger.error(f"Failed to create upgrade_download job: {e}")
 
-    staging_root = Path(os.environ.get("STAGING_PATH", "/staging"))
     music_path = os.environ.get("MUSIC_PATH", "/music")
     trash_path = os.environ.get("TRASH_PATH", "/trash")
 
@@ -399,8 +386,7 @@ def _run_download_worker():
                    FROM upgrade_queue uq
                    JOIN tracks t ON uq.track_id = t.id
                    WHERE uq.status = 'approved'
-                     AND uq.slskd_username IS NOT NULL
-                     AND uq.slskd_filename IS NOT NULL"""
+                     AND uq.mg_track_id IS NOT NULL"""
             ).fetchall()
 
         total = len(approved)
@@ -408,14 +394,12 @@ def _run_download_worker():
         upgrade_search_status["download_total"] = total
         _broadcast_sync("job_update", dict(upgrade_search_status))
 
-        from upgrade_service import download_file, fetch_completed_file, get_download_status, cancel_download
+        from upgrade_service import download_track, wait_for_download
 
         for idx, item in enumerate(approved, start=1):
             item_dict = dict(item)
             queue_id = item_dict["id"]
-            username = item_dict["slskd_username"]
-            filename = item_dict["slskd_filename"]
-            file_size = item_dict.get("slskd_file_size")
+            mg_track_id = item_dict["mg_track_id"]
             original_path = item_dict["file_path"]
             artist = item_dict.get("artist") or ""
             title = item_dict.get("title") or ""
@@ -424,13 +408,13 @@ def _run_download_worker():
             upgrade_search_status.update({
                 "downloading": upgrade_search_status["downloading"] + 1,
                 "download_index": idx,
-                "current_track": f"{artist} - {title}" if artist or title else filename.split("\\")[-1],
+                "current_track": f"{artist} - {title}" if artist or title else f"Track {mg_track_id}",
                 "current_artist": artist,
                 "current_title": title,
                 "current_album": album,
-                "current_step": "slskd",
+                "current_step": "downloading",
                 "current_bytes": 0,
-                "current_total_bytes": file_size or 0,
+                "current_total_bytes": 0,
             })
             _broadcast_sync("job_update", dict(upgrade_search_status))
 
@@ -441,64 +425,45 @@ def _run_download_worker():
                 )
 
             try:
-                # Initiate download via slskd
-                started = asyncio.run(download_file(username, filename, file_size))
-                if not started:
-                    raise RuntimeError(f"slskd download initiation failed for {username}/{filename}")
+                # Initiate download via MusicGrabber
+                mg_job_id = download_track(mg_track_id, artist, title)
 
-                # Poll until complete or failed
-                poll_timeout = 600  # 10 minutes
-                poll_interval = 5
-                elapsed = 0
-                local_filename = None
+                # Store the MusicGrabber job ID
+                with get_db() as db:
+                    db.execute(
+                        "UPDATE upgrade_queue SET mg_job_id = ? WHERE id = ?",
+                        (mg_job_id, queue_id),
+                    )
 
-                while elapsed < poll_timeout:
-                    time.sleep(poll_interval)
-                    elapsed += poll_interval
+                # Wait for MusicGrabber to finish downloading
+                mg_status = wait_for_download(mg_job_id)
 
-                    dl_status = asyncio.run(get_download_status(username, filename))
-                    if dl_status is None:
-                        continue
-
-                    # Update live bytes progress
-                    bytes_done = dl_status.get("bytes_transferred", 0)
-                    total_bytes = dl_status.get("size", 0) or file_size or 0
-                    upgrade_search_status["current_bytes"] = bytes_done
-                    upgrade_search_status["current_total_bytes"] = total_bytes
-                    _broadcast_sync("job_update", dict(upgrade_search_status))
-
-                    state = dl_status.get("state", "")
-                    if state.startswith("Completed"):
-                        if "Succeeded" in state or state == "Completed":
-                            local_filename = dl_status.get("local_filename")
-                            break
-                        else:
-                            raise RuntimeError(f"slskd download {state}: {username}/{filename}")
-                    elif "Failed" in state or "Cancelled" in state:
-                        raise RuntimeError(f"slskd download {state}: {username}/{filename}")
-
-                if not local_filename:
-                    raise RuntimeError(f"Download timed out or no local path: {username}/{filename}")
-
-                # SCP completed file from BuyVM to local /staging
-                upgrade_search_status["current_step"] = "transferring"
-                _broadcast_sync("job_update", dict(upgrade_search_status))
-                staging_file = fetch_completed_file(local_filename, str(staging_root))
-                staging_path = Path(staging_file)
-
-                if not staging_path.exists():
-                    raise FileNotFoundError(f"Staging file not found after SCP: {staging_path}")
-
-                # Compute SHA-256 of the downloaded file
-                sha256_new = compute_sha256(str(staging_path))
-
-                # Import: verify + move to library
+                # MusicGrabber drops the file into /music/{Artist}/{Title}.flac
+                # We need to find the newly created file
                 upgrade_search_status["current_step"] = "importing"
                 _broadcast_sync("job_update", dict(upgrade_search_status))
-                new_library_path = import_flac(str(staging_path), original_path, music_path)
 
-                # Read metadata from the newly placed FLAC
-                new_meta = read_track_metadata(new_library_path)
+                # The file is now in the shared /music directory.
+                # MusicGrabber organises by artist: /music/{Artist}/{Title}.flac
+                # or /music/{Artist}/{Album}/{Title}.flac
+                # We need to find it. MusicGrabber's job response has artist/title.
+                mg_artist = mg_status.get("artist") or artist
+                mg_title = mg_status.get("title") or title
+                audio_quality = mg_status.get("audio_quality") or ""
+
+                # Search for the newly downloaded file
+                new_file = _find_musicgrabber_download(music_path, mg_artist, mg_title)
+                if not new_file:
+                    raise FileNotFoundError(
+                        f"Could not locate MusicGrabber download for "
+                        f"'{mg_artist} - {mg_title}' in {music_path}"
+                    )
+
+                # Compute SHA-256
+                sha256_new = compute_sha256(new_file)
+
+                # Read metadata from the new FLAC
+                new_meta = read_track_metadata(new_file)
 
                 # Quality gate: if original was FLAC, verify the new file is actually better
                 if item_dict.get("original_format", "").lower() == "flac":
@@ -507,17 +472,33 @@ def _run_download_worker():
                     new_depth = new_meta.get("bit_depth") or 0
                     new_rate = new_meta.get("sample_rate") or 0
                     if new_depth <= orig_depth and new_rate <= orig_rate:
-                        Path(new_library_path).unlink(missing_ok=True)
+                        Path(new_file).unlink(missing_ok=True)
                         raise ValueError(
                             f"Downloaded FLAC not higher resolution than original "
                             f"(orig {orig_depth}bit/{orig_rate}Hz, new {new_depth}bit/{new_rate}Hz)"
                         )
 
-                # Database updates
+                # Import: move the new file to the original's location (with .flac extension)
+                # so it replaces the old file in the library structure
+                original_dir = str(Path(original_path).parent)
+                original_stem = Path(original_path).stem
+                target_path = str(Path(original_dir) / f"{original_stem}.flac")
+
+                # If the MusicGrabber file is already in the right place, skip the move
+                if str(Path(new_file).resolve()) != str(Path(target_path).resolve()):
+                    # Move new file to the original's location
+                    Path(target_path).parent.mkdir(parents=True, exist_ok=True)
+                    import shutil
+                    shutil.move(new_file, target_path)
+                    new_file = target_path
+
+                    # Re-read metadata after move
+                    new_meta = read_track_metadata(new_file)
+
+                # Trash the original file (if different from new and still exists)
                 from file_manager import trash_file as do_trash_file
 
-                # Trash the original lossy file (if still exists)
-                if Path(original_path).exists():
+                if Path(original_path).exists() and str(Path(original_path).resolve()) != str(Path(new_file).resolve()):
                     trash_dest = do_trash_file(original_path, trash_path, music_path)
                     with get_db() as db:
                         db.execute(
@@ -542,16 +523,16 @@ def _run_download_worker():
                             disc_number, status, scanned_at)
                            VALUES (?, ?, 'flac', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP)""",
                         (
-                            new_library_path,
+                            new_file,
                             new_meta.get("file_size"),
                             new_meta.get("bitrate"),
                             new_meta.get("bit_depth"),
                             new_meta.get("sample_rate"),
                             new_meta.get("duration"),
-                            new_meta.get("artist") or item_dict.get("artist", ""),
+                            new_meta.get("artist") or artist,
                             new_meta.get("album_artist", ""),
-                            new_meta.get("album") or item_dict.get("album", ""),
-                            new_meta.get("title") or item_dict.get("title", ""),
+                            new_meta.get("album") or album,
+                            new_meta.get("title") or title,
                             new_meta.get("track_number") or item_dict.get("track_number"),
                             new_meta.get("disc_number") or item_dict.get("disc_number"),
                         ),
@@ -565,18 +546,16 @@ def _run_download_worker():
                                sha256_new = ?,
                                updated_at = CURRENT_TIMESTAMP
                            WHERE id = ?""",
-                        (new_library_path, sha256_new, queue_id),
+                        (new_file, sha256_new, queue_id),
                     )
 
                 upgrade_search_status["completed"] += 1
-                logger.info(
-                    f"Upgraded: {item_dict.get('artist')} - {item_dict.get('title')} -> {new_library_path}"
-                )
+                logger.info(f"Upgraded: {artist} - {title} -> {new_file}")
 
             except Exception as e:
                 logger.error(
                     f"Download failed for queue item {queue_id} "
-                    f"({item_dict.get('artist')} - {item_dict.get('title')}): {e}"
+                    f"({artist} - {title}): {e}"
                 )
                 upgrade_search_status["failed"] += 1
                 with get_db() as db:
@@ -618,14 +597,66 @@ def _run_download_worker():
         _broadcast_sync("job_update", dict(upgrade_search_status))
 
 
+def _find_musicgrabber_download(music_root: str, artist: str, title: str) -> str | None:
+    """
+    Find a recently downloaded file from MusicGrabber in the shared music directory.
+    MusicGrabber organises files as: /music/{Artist}/{Title}.flac (singles)
+    or /music/{Artist}/{Album}/{Title}.flac (if album metadata exists).
+    """
+    from upgrade_service import _normalize_text
+
+    norm_artist = _normalize_text(artist)
+    norm_title = _normalize_text(title)
+    root = Path(music_root)
+
+    # Strategy 1: Look in the "Singles" folder (MusicGrabber default)
+    singles_dir = root / "Singles"
+    if singles_dir.exists():
+        for f in singles_dir.rglob("*.flac"):
+            if _normalize_text(f.stem) == norm_title:
+                return str(f)
+
+    # Strategy 2: Look in artist folder
+    for artist_dir in root.iterdir():
+        if not artist_dir.is_dir():
+            continue
+        if _normalize_text(artist_dir.name) != norm_artist:
+            continue
+        # Check immediate files and one level of subdirectories
+        for f in artist_dir.rglob("*.flac"):
+            if _normalize_text(f.stem) == norm_title:
+                return str(f)
+
+    # Strategy 3: Broad search — most recently modified FLAC matching title
+    # (limited to last 5 minutes to avoid false matches)
+    import time as _time
+    cutoff = _time.time() - 300  # 5 minutes ago
+    best_match = None
+    best_mtime = 0
+
+    for f in root.rglob("*.flac"):
+        try:
+            stat = f.stat()
+            if stat.st_mtime < cutoff:
+                continue
+            if _normalize_text(f.stem) == norm_title and stat.st_mtime > best_mtime:
+                best_match = str(f)
+                best_mtime = stat.st_mtime
+        except OSError:
+            continue
+
+    return best_match
+
+
 @router.get("")
 @router.get("/")
 def list_upgrades(status: str | None = None):
-    """Return upgrade queue items with track metadata. Optionally filter by status."""
+    """Return upgrade queue items with track metadata."""
     with get_db() as db:
         if status:
             rows = db.execute(
                 """SELECT uq.id, uq.track_id, uq.status, uq.match_quality,
+                          uq.mg_track_id, uq.mg_quality, uq.mg_source_url,
                           uq.staging_path, uq.created_at, uq.updated_at, uq.error_msg,
                           t.artist, t.album, t.title, t.format, t.bitrate
                    FROM upgrade_queue uq
@@ -637,6 +668,7 @@ def list_upgrades(status: str | None = None):
         else:
             rows = db.execute(
                 """SELECT uq.id, uq.track_id, uq.status, uq.match_quality,
+                          uq.mg_track_id, uq.mg_quality, uq.mg_source_url,
                           uq.staging_path, uq.created_at, uq.updated_at, uq.error_msg,
                           t.artist, t.album, t.title, t.format, t.bitrate
                    FROM upgrade_queue uq
@@ -648,7 +680,7 @@ def list_upgrades(status: str | None = None):
 
 @router.post("/search")
 def start_upgrade_search(scope: ScanScope | None = None):
-    """Start a scoped background slskd search for FLAC upgrades."""
+    """Start a background MusicGrabber search for FLAC upgrades."""
     if upgrade_search_status["running"]:
         return {"ok": False, "error": "Upgrade search already in progress"}
 
@@ -690,7 +722,6 @@ def get_upgrade_status():
         "downloading": c.get("downloading", 0),
         "completed": c.get("completed", 0),
         "failed": c.get("failed", 0),
-        # Per-item detail
         "current_track": upgrade_search_status["current_track"],
         "current_artist": upgrade_search_status["current_artist"],
         "current_title": upgrade_search_status["current_title"],
@@ -764,15 +795,14 @@ def list_unscanned(limit: int = 500):
 
 @router.post("/approve-hi-res")
 def approve_hi_res_upgrades():
-    """Approve only hi-res quality found items (match_quality = 'hi_res')."""
+    """Approve only hi-res quality found items."""
     with get_db() as db:
         result = db.execute(
             """UPDATE upgrade_queue
                SET status = 'approved', updated_at = CURRENT_TIMESTAMP
                WHERE status = 'found'
                  AND match_quality = 'hi_res'
-                 AND slskd_username IS NOT NULL
-                 AND slskd_filename IS NOT NULL"""
+                 AND mg_track_id IS NOT NULL"""
         )
         count = result.rowcount
     return {"ok": True, "approved": count}
@@ -783,17 +813,17 @@ def approve_upgrade(item_id: int):
     """Mark an upgrade queue item as approved for download."""
     with get_db() as db:
         row = db.execute(
-            "SELECT id, status, slskd_username, slskd_filename FROM upgrade_queue WHERE id = ?",
+            "SELECT id, status, mg_track_id FROM upgrade_queue WHERE id = ?",
             (item_id,),
         ).fetchone()
 
     if not row:
         raise HTTPException(status_code=404, detail="Upgrade item not found")
 
-    if not row["slskd_username"] or not row["slskd_filename"]:
+    if not row["mg_track_id"]:
         raise HTTPException(
             status_code=400,
-            detail="Cannot approve: no slskd download info. Run search first.",
+            detail="Cannot approve: no MusicGrabber match found. Run search first.",
         )
 
     with get_db() as db:
@@ -813,8 +843,7 @@ def approve_all_upgrades():
             """UPDATE upgrade_queue
                SET status = 'approved', updated_at = CURRENT_TIMESTAMP
                WHERE status = 'found'
-                 AND slskd_username IS NOT NULL
-                 AND slskd_filename IS NOT NULL"""
+                 AND mg_track_id IS NOT NULL"""
         )
     return {"ok": True, "approved": result.rowcount}
 

@@ -12,7 +12,6 @@ import {
   AlertCircle,
   Loader2,
   Server,
-  HardDrive,
   PackageCheck,
   ChevronUp,
   ChevronDown,
@@ -408,7 +407,7 @@ function UpgradesTab() {
   const handleSearch = async () => {
     try {
       await postUpgradesSearch()
-      toast.success('Soulseek search started')
+      toast.success('MusicGrabber search started')
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to start search')
     }
@@ -484,7 +483,7 @@ function UpgradesTab() {
         <div className="rounded-xl bg-[#1a1d27] border border-[#3b82f6]/30 p-4">
           <div className="flex items-center gap-2 mb-2">
             <Search className="w-4 h-4 text-[#60a5fa]" />
-            <span className="text-sm text-[#60a5fa]">Searching Soulseek...</span>
+            <span className="text-sm text-[#60a5fa]">Searching MusicGrabber...</span>
           </div>
           <ProgressBar
             value={upgradeStatus?.searched}
@@ -531,12 +530,11 @@ function UpgradesTab() {
           {/* Step pipeline */}
           <div className="flex items-center gap-2">
             {([
-              { key: 'slskd', label: 'Soulseek', Icon: Server },
-              { key: 'transferring', label: '→ NAS', Icon: HardDrive },
+              { key: 'downloading', label: 'Downloading', Icon: Server },
               { key: 'importing', label: 'Import', Icon: PackageCheck },
             ] as const).map(({ key, label, Icon }, i) => {
-              const steps = ['slskd', 'transferring', 'importing'] as const
-              const currentIdx = steps.indexOf(upgradeStatus?.current_step ?? 'slskd')
+              const steps = ['downloading', 'importing'] as const
+              const currentIdx = steps.indexOf(upgradeStatus?.current_step ?? 'downloading')
               const stepIdx = steps.indexOf(key)
               const isDone = stepIdx < currentIdx
               const isActive = key === upgradeStatus?.current_step
@@ -555,17 +553,6 @@ function UpgradesTab() {
               )
             })}
           </div>
-
-          {/* Byte progress (slskd step only) */}
-          {upgradeStatus?.current_step === 'slskd' && (upgradeStatus?.current_total_bytes ?? 0) > 0 && (
-            <div>
-              <div className="flex justify-between text-xs text-slate-500 mb-1">
-                <span>{((upgradeStatus.current_bytes ?? 0) / 1024 / 1024).toFixed(1)} MB</span>
-                <span>{((upgradeStatus.current_total_bytes ?? 0) / 1024 / 1024).toFixed(1)} MB</span>
-              </div>
-              <ProgressBar value={upgradeStatus.current_bytes} max={upgradeStatus.current_total_bytes} active />
-            </div>
-          )}
 
           {/* Overall progress */}
           {(upgradeStatus?.download_total ?? 0) > 0 && (
@@ -635,7 +622,7 @@ function UpgradesTab() {
             loading={!!isSearching}
           >
             <Search className="w-3.5 h-3.5" />
-            Search Soulseek
+            Search MusicGrabber
           </Button>
         </div>
       </div>
@@ -652,7 +639,7 @@ function UpgradesTab() {
           <ArrowUpCircle className="w-8 h-8 text-slate-600 mx-auto mb-3" />
           <p className="text-slate-400 text-sm">No upgrades in this filter</p>
           <p className="text-slate-600 text-xs mt-1">
-            {filter === 'all' ? 'Search Soulseek to find FLAC upgrades' : `No ${filter} upgrades`}
+            {filter === 'all' ? 'Search MusicGrabber to find FLAC upgrades' : `No ${filter} upgrades`}
           </p>
         </div>
       ) : (

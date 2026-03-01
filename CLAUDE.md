@@ -26,7 +26,7 @@ Note: `ssh-add --apple-load-keychain` must run in the same shell session before 
   - `scanner.py` — audio tag reading (mutagen) and fingerprinting (chromaprint)
   - `dedup.py` — metadata grouping, quality ranking, duplicate detection
   - `file_manager.py` — trash/restore/empty file operations
-  - `upgrade_service.py` — squid.wtf/Tidal search, matching, and FLAC download
+  - `upgrade_service.py` — MusicGrabber API client (Monochrome/Tidal search + FLAC download)
   - `database.py` — SQLite schema and connection management
   - `routes/` — FastAPI routers (scan, dupes, trash, stats, upgrades, settings)
 - `frontend/` — React SPA (Vite + Tailwind)

@@ -18,7 +18,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/jobs', label: 'Job Log', icon: ScrollText },
 ]
 
-function useSlskdStatus() {
+function useMusicGrabberStatus() {
   const [connected, setConnected] = useState<boolean | null>(null)
 
   useEffect(() => {
@@ -39,7 +39,7 @@ function useSlskdStatus() {
 }
 
 export function Sidebar() {
-  const slskdConnected = useSlskdStatus()
+  const mgConnected = useMusicGrabberStatus()
 
   return (
     <aside className="fixed left-0 top-0 h-screen w-[220px] flex flex-col bg-[#13151f] border-r border-[#2a2d3a] z-40">
@@ -73,22 +73,22 @@ export function Sidebar() {
         ))}
       </nav>
 
-      {/* slskd status */}
+      {/* MusicGrabber status */}
       <div className="px-5 py-4 border-t border-[#2a2d3a] shrink-0">
         <div className="flex items-center gap-2">
           <span
             className={`w-2 h-2 rounded-full shrink-0 ${
-              slskdConnected === null
+              mgConnected === null
                 ? 'bg-slate-600'
-                : slskdConnected
+                : mgConnected
                 ? 'bg-[#22c55e] shadow-[0_0_6px_rgba(34,197,94,0.6)]'
                 : 'bg-[#ef4444] shadow-[0_0_6px_rgba(239,68,68,0.6)]'
             }`}
           />
           <span className="text-xs text-slate-500">
-            {slskdConnected === null
+            {mgConnected === null
               ? 'Checking...'
-              : slskdConnected
+              : mgConnected
               ? 'Connected'
               : 'Disconnected'}
           </span>

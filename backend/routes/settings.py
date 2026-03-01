@@ -11,9 +11,9 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 # Keys that can be read/written via the API
 ALLOWED_KEYS = {
-    "slskd_search_timeout_s",
     "auto_resolve_threshold",
     "upgrade_scan_limit",
+    "upgrade_concurrency",
 }
 
 # Read-only environment-derived values surfaced in GET response
@@ -21,13 +21,13 @@ ENV_KEYS = {
     "music_path": "MUSIC_PATH",
     "trash_path": "TRASH_PATH",
     "staging_path": "STAGING_PATH",
-    "slskd_url": "SLSKD_URL",
+    "musicgrabber_url": "MUSICGRABBER_URL",
 }
 
 DEFAULTS = {
-    "slskd_search_timeout_s": "20",
     "auto_resolve_threshold": "0.0",
     "upgrade_scan_limit": "0",
+    "upgrade_concurrency": "8",
 }
 
 

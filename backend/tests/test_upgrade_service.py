@@ -1,9 +1,8 @@
 """
-Tests for the slskd-based upgrade_service module.
+Tests for the MusicGrabber-based upgrade_service module.
 All HTTP calls are mocked via httpx mock transport.
 """
 import asyncio
-import sys
 
 import pytest
 import httpx
@@ -43,116 +42,94 @@ def _patch_client(monkeypatch, routes: dict):
 
 
 def test_check_connected_true(monkeypatch):
-    orig = _patch_client(monkeypatch, {("GET", "/api/v0/application"): (200, {"status": "ok"})})
+    orig = _patch_client(monkeypatch, {("GET", "/api/version"): (200, {"version": "2.2.4"})})
     assert run(us.check_connected()) is True
     monkeypatch.setattr(httpx, "AsyncClient", orig)
 
 
 def test_check_connected_false(monkeypatch):
-    orig = _patch_client(monkeypatch, {("GET", "/api/v0/application"): (503, {})})
+    orig = _patch_client(monkeypatch, {("GET", "/api/version"): (503, {})})
     assert run(us.check_connected()) is False
     monkeypatch.setattr(httpx, "AsyncClient", orig)
 
 
-def test_download_file_success(monkeypatch):
-    orig = _patch_client(monkeypatch, {("POST", "/api/v0/transfers/downloads/"): (201, {})})
-    result = run(us.download_file("testuser", "/music/Artist/song.flac", 12345678))
-    assert result is True
-    monkeypatch.setattr(httpx, "AsyncClient", orig)
+def test_classify_quality_hi_res():
+    assert us._classify_quality("HI_RES_LOSSLESS") == "hi_res"
+    assert us._classify_quality("HI_RES") == "hi_res"
+    assert us._classify_quality(None, "FLAC 96kHz 24bit") == "hi_res"
 
 
-def test_download_file_failure(monkeypatch):
-    orig = _patch_client(monkeypatch, {("POST", "/api/v0/transfers/downloads/"): (400, {"error": "bad"})})
-    result = run(us.download_file("testuser", "/music/Artist/song.flac"))
-    assert result is False
-    monkeypatch.setattr(httpx, "AsyncClient", orig)
+def test_classify_quality_lossless():
+    assert us._classify_quality("LOSSLESS") == "lossless"
+    assert us._classify_quality(None, "FLAC 44.1kHz 16bit") == "lossless"
 
 
-def test_score_slskd_result_hi_res_marker():
-    entry = {"filename": "/music/Artist/Album [24bit]/song.flac", "size": 90_000_000, "uploadSpeed": 0}
-    score = us._score_slskd_result(entry)
-    assert score >= 1000
+def test_score_search_result_exact_match():
+    result = {
+        "channel": "Pink Floyd",
+        "title": "Time",
+        "album": "The Dark Side of the Moon",
+        "quality": "LOSSLESS",
+        "quality_score": 200,
+    }
+    score = us._score_search_result(result, "Pink Floyd", "Time", "The Dark Side of the Moon")
+    assert score > 500  # Should be high with exact artist + title match
 
 
-def test_score_slskd_result_no_markers():
-    entry = {"filename": "/music/Artist/Album/song.flac", "size": 5_000_000, "uploadSpeed": 0}
-    score = us._score_slskd_result(entry)
-    assert score == 0
+def test_score_search_result_wrong_artist():
+    correct = {
+        "channel": "Pink Floyd",
+        "title": "Time",
+        "album": "The Dark Side of the Moon",
+        "quality": "LOSSLESS",
+        "quality_score": 200,
+    }
+    wrong = {
+        "channel": "Lil Wayne",
+        "title": "Time",
+        "album": "Tha Carter V",
+        "quality": "LOSSLESS",
+        "quality_score": 200,
+    }
+    correct_score = us._score_search_result(correct, "Pink Floyd", "Time", "The Dark Side of the Moon")
+    wrong_score = us._score_search_result(wrong, "Pink Floyd", "Time", "The Dark Side of the Moon")
+    # Wrong artist should score significantly lower than correct artist
+    assert wrong_score < correct_score
 
 
-def test_score_slskd_result_large_file_bonus():
-    entry = {"filename": "/music/Artist/Album/song.flac", "size": 60_000_000, "uploadSpeed": 0}
-    score = us._score_slskd_result(entry)
-    assert score >= 100
+def test_normalize_text():
+    assert us._normalize_text("  Hello, World!  ") == "hello world"
+    assert us._normalize_text("AC/DC") == "acdc"
+    assert us._normalize_text("") == ""
 
 
-def test_score_slskd_result_medium_file_bonus():
-    entry = {"filename": "/music/Artist/Album/song.flac", "size": 25_000_000, "uploadSpeed": 0}
-    score = us._score_slskd_result(entry)
-    assert score >= 50
-
-
-def test_classify_match_quality_hi_res_24bit():
-    entry = {"filename": "/music/Album [24bit]/song.flac", "size": 30_000_000}
-    assert us._classify_match_quality(entry) == "hi_res"
-
-
-def test_classify_match_quality_lossless():
-    entry = {"filename": "/music/Album/song.flac", "size": 25_000_000}
-    assert us._classify_match_quality(entry) == "lossless"
-
-
-def test_classify_match_quality_very_large_file():
-    entry = {"filename": "/music/Album/song.flac", "size": 100_000_000}
-    assert us._classify_match_quality(entry) == "hi_res"
-
-
-def test_get_download_status_completed(monkeypatch):
-    transfers = [
-        {
-            "files": [
-                {
-                    "filename": "/music/Artist/song.flac",
-                    "state": "Completed",
-                    "bytesTransferred": 12345678,
-                    "size": 12345678,
-                    "localFilename": "/downloads/Artist/song.flac",
-                }
-            ]
-        }
-    ]
-    orig = _patch_client(monkeypatch, {("GET", "/api/v0/transfers/downloads/"): (200, transfers)})
-    result = run(us.get_download_status("testuser", "/music/Artist/song.flac"))
-    assert result is not None
-    assert result["state"] == "Completed"
-    assert result["local_filename"] == "/downloads/Artist/song.flac"
-    monkeypatch.setattr(httpx, "AsyncClient", orig)
-
-
-def test_get_download_status_not_found(monkeypatch):
-    orig = _patch_client(monkeypatch, {("GET", "/api/v0/transfers/downloads/"): (200, [])})
-    result = run(us.get_download_status("testuser", "missing.flac"))
+def test_search_for_flac_no_results(monkeypatch):
+    orig = _patch_client(monkeypatch, {
+        ("POST", "/api/search"): (200, {"results": []}),
+    })
+    result = run(us.search_for_flac("Unknown", "", "Unknown Track"))
     assert result is None
     monkeypatch.setattr(httpx, "AsyncClient", orig)
 
 
-def test_get_download_status_matches_by_basename(monkeypatch):
-    """Should find a file by matching just the basename."""
-    transfers = [
-        {
-            "files": [
-                {
-                    "filename": "/long/path/on/slskd/song.flac",
-                    "state": "InProgress",
-                    "bytesTransferred": 5000000,
-                    "size": 12345678,
-                    "localFilename": "/downloads/path/song.flac",
-                }
-            ]
-        }
-    ]
-    orig = _patch_client(monkeypatch, {("GET", "/api/v0/transfers/downloads/"): (200, transfers)})
-    result = run(us.get_download_status("testuser", "/long/path/on/slskd/song.flac"))
+def test_search_for_flac_with_results(monkeypatch):
+    orig = _patch_client(monkeypatch, {
+        ("POST", "/api/search"): (200, {"results": [
+            {
+                "video_id": "12345",
+                "title": "Time",
+                "channel": "Pink Floyd",
+                "album": "The Dark Side of the Moon",
+                "quality": "LOSSLESS",
+                "quality_score": 300,
+                "source_url": "https://monochrome.tf/track/12345",
+                "slskd_username": None,
+                "slskd_filename": None,
+            }
+        ]}),
+    })
+    result = run(us.search_for_flac("Pink Floyd", "The Dark Side of the Moon", "Time"))
     assert result is not None
-    assert result["state"] == "InProgress"
+    assert result["mg_track_id"] == "12345"
+    assert result["match_quality"] == "lossless"
     monkeypatch.setattr(httpx, "AsyncClient", orig)

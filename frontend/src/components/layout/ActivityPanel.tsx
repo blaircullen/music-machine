@@ -38,9 +38,8 @@ export function ActivityPanel() {
   }
 
   if (upgrade.phase === 'downloading' && upgrade.running) {
-    const stepLabel = upgrade.current_step === 'transferring' ? '→ NAS'
-      : upgrade.current_step === 'importing' ? '→ Library'
-      : '↓ Soulseek'
+    const stepLabel = upgrade.current_step === 'importing' ? '→ Library'
+      : '↓ Downloading'
     return (
       <div className="flex items-center gap-2 text-xs text-lime">
         <Download className="w-3.5 h-3.5 animate-bounce" />

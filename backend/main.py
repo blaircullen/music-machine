@@ -66,7 +66,7 @@ async def lifespan(app: FastAPI):
                 logger.info(f"Cleaned up {cur.rowcount} orphaned running job(s)")
                 # Reset any tracks left in mid-flight states by the crashed job
                 db.execute(
-                    "UPDATE upgrade_queue SET status='pending', slskd_search_id=NULL "
+                    "UPDATE upgrade_queue SET status='pending' "
                     "WHERE status IN ('searching', 'downloading')"
                 )
                 db.commit()

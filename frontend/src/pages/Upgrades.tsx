@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
-import { ArrowUpCircle, Search, Download, CheckCircle, XCircle, Loader2, Server, HardDrive, PackageCheck, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react'
+import { ArrowUpCircle, Search, Download, CheckCircle, XCircle, Loader2, Server, PackageCheck, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react'
 import { GlassCard, StatCard, Button, Badge, ProgressBar, EmptyState, SkeletonTable, toast } from '../components/ui'
 import { useUpgradeStatus } from '../hooks/useUpgradeStatus'
 
@@ -489,12 +489,11 @@ export default function Upgrades() {
           {/* Step pipeline */}
           <div className="flex items-center gap-2 mb-4 relative z-10">
             {([
-              { key: 'slskd',       label: 'Soulseek',    icon: Server },
-              { key: 'transferring', label: 'Transfer → NAS', icon: HardDrive },
-              { key: 'importing',   label: 'Import',      icon: PackageCheck },
+              { key: 'downloading', label: 'Downloading',  icon: Server },
+              { key: 'importing',   label: 'Import',       icon: PackageCheck },
             ] as const).map(({ key, label, icon: Icon }, i) => {
-              const steps = ['slskd', 'transferring', 'importing'] as const
-              const currentIdx = steps.indexOf(upgradeStatus.current_step ?? 'slskd')
+              const steps = ['downloading', 'importing'] as const
+              const currentIdx = steps.indexOf(upgradeStatus.current_step ?? 'downloading')
               const stepIdx = steps.indexOf(key)
               const isDone = stepIdx < currentIdx
               const isActive = key === upgradeStatus.current_step
@@ -515,21 +514,6 @@ export default function Upgrades() {
               )
             })}
           </div>
-
-          {/* Byte-level progress (only during slskd download) */}
-          {upgradeStatus.current_step === 'slskd' && upgradeStatus.current_total_bytes > 0 && (
-            <div className="mb-3 relative z-10">
-              <div className="flex justify-between text-xs text-base-400 mb-1">
-                <span>{(upgradeStatus.current_bytes / 1024 / 1024).toFixed(1)} MB</span>
-                <span>{(upgradeStatus.current_total_bytes / 1024 / 1024).toFixed(1)} MB</span>
-              </div>
-              <ProgressBar
-                value={upgradeStatus.current_bytes}
-                max={upgradeStatus.current_total_bytes}
-                active
-              />
-            </div>
-          )}
 
           {/* Overall progress bar */}
           {upgradeStatus.download_total > 0 && (
