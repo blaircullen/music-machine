@@ -746,7 +746,7 @@ export default function Upgrades() {
                 <tbody>
                   {sortedQueue.map(item => {
                     const busy = actionInProgress.has(item.id)
-                    const canAct = item.status === 'found' || item.status === 'pending'
+                    const canAct = item.status === 'found'
                     const justApproved = recentlyApproved.has(item.id)
                     return (
                       <motion.tr
