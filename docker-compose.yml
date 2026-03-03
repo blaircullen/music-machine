@@ -11,6 +11,7 @@ services:
       - ./staging:/staging
     environment:
       - MUSIC_PATH=/music
+      - MUSIC_ROOT=/music
       - TRASH_PATH=/trash
       - STAGING_PATH=/staging
       - DB_PATH=/data/music-machine.db
