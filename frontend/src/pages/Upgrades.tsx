@@ -74,7 +74,7 @@ export default function Upgrades() {
   const [scanScope, setScanScope] = useState({
     format_filter: 'all_lossy',
     unscanned_only: true,
-    batch_size: 50,
+    batch_size: 0,
     artist_filter: '',
   })
 
@@ -862,14 +862,14 @@ export default function Upgrades() {
               {/* Batch size */}
               <div>
                 <label className="text-xs text-base-400 uppercase tracking-wider mb-1 block">
-                  Batch size (albums per run)
+                  Batch size (albums per run — 0 = unlimited)
                 </label>
                 <input
                   type="number"
                   min={0}
                   max={500}
                   value={scanScope.batch_size}
-                  onChange={e => setScanScope(s => ({ ...s, batch_size: parseInt(e.target.value) || 50 }))}
+                  onChange={e => setScanScope(s => ({ ...s, batch_size: parseInt(e.target.value) || 0 }))}
                   className="w-full bg-base-700 border border-base-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent/50"
                 />
               </div>
