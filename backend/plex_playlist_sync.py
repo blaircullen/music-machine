@@ -16,11 +16,11 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-PLEX_URL = os.environ.get("PLEX_URL", "http://10.0.0.7:32400")
-PLEX_TOKEN = os.environ.get("PLEX_TOKEN", "fzVAhz-21g7CfJvA7jK8")
+PLEX_URL = os.environ.get("PLEX_URL", "http://10.0.0.13:32400")
+PLEX_TOKEN = os.environ.get("PLEX_TOKEN", "mxrEzLiMjZ1FftGMZaiq")
 MUSIC_PATH = os.environ.get("MUSIC_PATH", "/music")
 SINGLES_DIR = os.path.join(MUSIC_PATH, "Singles")
-MUSIC_SECTION_ID = os.environ.get("PLEX_MUSIC_SECTION", "2")
+MUSIC_SECTION_ID = os.environ.get("PLEX_MUSIC_SECTION", "5")
 
 _machine_id: Optional[str] = None
 

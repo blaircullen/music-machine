@@ -128,4 +128,4 @@ No automated file actions — user wants to review all duplicate resolutions man
 
 ## Plex Library Scan
 
-After upgrades/reorg, trigger: `GET http://10.0.0.7:32400/library/sections/2/refresh?X-Plex-Token=fzVAhz-21g7CfJvA7jK8`
+After upgrades/reorg, trigger: `GET http://10.0.0.13:32400/library/sections/5/refresh?X-Plex-Token=mxrEzLiMjZ1FftGMZaiq`
