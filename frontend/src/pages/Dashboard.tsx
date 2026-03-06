@@ -390,25 +390,43 @@ export default function Dashboard() {
               </Link>
             )}
 
-            {stats && stats.upgrades_pending > 0 && (
+            {stats && stats.lossy_upgrades_pending > 0 && (
               <Link
-                to="/library?tab=upgrades"
-                className="flex items-center justify-between w-full rounded-lg p-3 bg-[#f59e0b]/10 border border-[#f59e0b]/20 hover:bg-[#f59e0b]/15 transition-colors group"
+                to="/upgrades"
+                className="flex items-center justify-between w-full rounded-lg p-3 bg-[#ef4444]/10 border border-[#ef4444]/20 hover:bg-[#ef4444]/15 transition-colors group"
               >
                 <div className="flex items-center gap-2.5">
-                  <ArrowUpCircle className="w-4 h-4 text-[#fbbf24]" />
+                  <ArrowUpCircle className="w-4 h-4 text-[#f87171]" />
                   <div>
-                    <p className="text-sm font-medium text-[#fbbf24]">
-                      {stats.upgrades_pending} Upgrades Pending
+                    <p className="text-sm font-medium text-[#f87171]">
+                      {stats.lossy_upgrades_pending.toLocaleString()} Lossy Tracks
                     </p>
-                    <p className="text-xs text-slate-500">Approve FLAC upgrades</p>
+                    <p className="text-xs text-slate-500">Need lossless replacement</p>
                   </div>
                 </div>
-                <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-[#fbbf24] transition-colors" />
+                <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-[#f87171] transition-colors" />
               </Link>
             )}
 
-            {(!stats || (stats.dupes_found === 0 && stats.upgrades_pending === 0)) && (
+            {stats && stats.hires_upgrades_pending > 0 && (
+              <Link
+                to="/upgrades"
+                className="flex items-center justify-between w-full rounded-lg p-3 bg-[#d4a017]/10 border border-[#d4a017]/20 hover:bg-[#d4a017]/15 transition-colors group"
+              >
+                <div className="flex items-center gap-2.5">
+                  <Sparkles className="w-4 h-4 text-[#f0c95c]" />
+                  <div>
+                    <p className="text-sm font-medium text-[#f0c95c]">
+                      {stats.hires_upgrades_pending.toLocaleString()} Hi-Res Queued
+                    </p>
+                    <p className="text-xs text-slate-500">FLAC → Hi-Res upgrades pending</p>
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-[#f0c95c] transition-colors" />
+              </Link>
+            )}
+
+            {(!stats || (stats.dupes_found === 0 && stats.lossy_upgrades_pending === 0)) && (
               <div className="flex items-center gap-2.5 p-3 rounded-lg bg-[#22c55e]/10 border border-[#22c55e]/20">
                 <Sparkles className="w-4 h-4 text-[#4ade80] shrink-0" />
                 <div>

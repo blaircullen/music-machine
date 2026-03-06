@@ -9,6 +9,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
+LOSSY_FORMATS = "('mp3', 'aac', 'm4a', 'ogg', 'wma', 'opus')"
+
 
 @router.get("")
 @router.get("/")
@@ -17,6 +19,7 @@ def get_stats():
     Aggregate library statistics.
     Response shape matches API contract:
     {total_tracks, flac_count, lossy_count, dupes_found, upgrades_pending,
+     lossy_upgrades_pending, hires_upgrades_pending,
      upgrades_completed, library_size_gb, formats: [{format, count}]}
     """
     with get_db() as db:
@@ -30,7 +33,7 @@ def get_stats():
 
         lossy_count = db.execute(
             "SELECT COUNT(*) FROM tracks WHERE status = 'active' "
-            "AND format IN ('mp3', 'aac', 'm4a', 'ogg', 'wma', 'opus')"
+            f"AND format IN {LOSSY_FORMATS}"
         ).fetchone()[0]
 
         dupes_found = db.execute(
@@ -40,6 +43,17 @@ def get_stats():
         upgrades_pending = db.execute(
             "SELECT COUNT(*) FROM upgrade_queue WHERE status IN ('pending', 'searching', 'found', 'approved')"
         ).fetchone()[0]
+
+        upgrade_breakdown = db.execute(
+            f"""SELECT
+                 SUM(CASE WHEN t.format IN {LOSSY_FORMATS} THEN 1 ELSE 0 END) as lossy_pending,
+                 SUM(CASE WHEN t.format NOT IN {LOSSY_FORMATS} THEN 1 ELSE 0 END) as hires_pending
+               FROM upgrade_queue uq
+               JOIN tracks t ON t.id = uq.track_id
+               WHERE uq.status IN ('pending', 'searching', 'found', 'approved')"""
+        ).fetchone()
+        lossy_upgrades_pending = upgrade_breakdown["lossy_pending"] or 0
+        hires_upgrades_pending = upgrade_breakdown["hires_pending"] or 0
 
         upgrades_completed = db.execute(
             "SELECT COUNT(*) FROM upgrade_queue WHERE status = 'completed'"
@@ -63,6 +77,8 @@ def get_stats():
         "lossy_count": lossy_count,
         "dupes_found": dupes_found,
         "upgrades_pending": upgrades_pending,
+        "lossy_upgrades_pending": lossy_upgrades_pending,
+        "hires_upgrades_pending": hires_upgrades_pending,
         "upgrades_completed": upgrades_completed,
         "library_size_gb": round(library_size_bytes / 1024 / 1024 / 1024, 3),
         "formats": [{"format": r["format"], "count": r["count"]} for r in formats],

@@ -18,7 +18,7 @@ def list_jobs():
             """SELECT id, job_type, status, created_at, updated_at, error_msg, details
                FROM jobs
                ORDER BY created_at DESC
-               LIMIT 100"""
+               LIMIT 10"""
         ).fetchall()
     return [dict(r) for r in rows]
 

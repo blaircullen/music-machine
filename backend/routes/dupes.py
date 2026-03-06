@@ -59,6 +59,10 @@ def _resolve_group_internal(group_id: int, keep_track_id: int) -> int:
                     (tid, file_path, dest),
                 )
                 moved += 1
+            except FileNotFoundError:
+                # NFS stale cache: exists() returned True but file is gone — treat as deleted
+                logger.warning(f"Track {tid} not found at {file_path} during trash — marking deleted")
+                db.execute("UPDATE tracks SET status = 'deleted' WHERE id = ?", (tid,))
             except Exception as e:
                 logger.error(f"Failed to trash track {tid} at {file_path}: {e}")
                 raise

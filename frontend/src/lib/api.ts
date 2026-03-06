@@ -6,6 +6,8 @@ export interface StatsResponse {
   lossy_count: number
   dupes_found: number
   upgrades_pending: number
+  lossy_upgrades_pending: number
+  hires_upgrades_pending: number
   upgrades_completed: number
   library_size_gb: number
   formats: Array<{ format: string; count: number }>
