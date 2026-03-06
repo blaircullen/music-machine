@@ -1,5 +1,5 @@
 services:
-  plex-dedup:
+  music-machine:
     volumes:
       - ./data:/data
       - /mnt/nas_music:/music

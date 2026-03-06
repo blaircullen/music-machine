@@ -1,261 +1,321 @@
-import httpx
-import asyncio
-import base64
-import json
+"""
+Upgrade service — MusicGrabber integration.
+
+Searches for FLAC upgrades via MusicGrabber's Monochrome/Tidal API
+and downloads them directly to the shared music library.
+"""
+
 import logging
+import os
 import re
+import time
+import unicodedata
 from pathlib import Path
-from dedup import normalize_text
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
-# Squid.wtf backend API hosts
-SEARCH_TRACKS_HOST = "https://hifi-two.spotisaver.net"
-SEARCH_ALBUMS_HOST = "https://triton.squid.wtf"
-TRACK_DOWNLOAD_HOST = "https://vogel.qqdl.site"
-TRACK_INFO_HOST = "https://wolf.qqdl.site"
+MUSICGRABBER_URL = os.environ.get("MUSICGRABBER_URL", "http://localhost:38274")
 
-# Quality tiers (best to worst)
-QUALITY_HI_RES = "HI_RES_LOSSLESS"  # 24-bit
-QUALITY_LOSSLESS = "LOSSLESS"        # 16/44.1 CD quality
-QUALITY_HIGH = "HIGH"                # 320kbps AAC
-
-DEFAULT_HEADERS = {"User-Agent": "plex-dedup/1.0"}
+HTTP_TIMEOUT = 30
+SEARCH_TIMEOUT = 20
+DOWNLOAD_POLL_TIMEOUT = 600  # 10 minutes max wait for a download
+DOWNLOAD_POLL_INTERVAL = 3
 
 
-def _collapse_spaced_name(text: str) -> str:
-    """Collapse stylized spaced-out names like 'A R I Z O N A' → 'ARIZONA'."""
+def _normalize_text(text: str) -> str:
+    """Normalize text for comparison (mirrors dedup.py normalize_text)."""
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFKD", text)
+    text = text.lower().strip()
+    text = re.sub(r"[^\w\s\-]", "", text)
     text = re.sub(r"\s+", " ", text).strip()
-    # If the text is single chars separated by spaces (e.g. "A R I Z O N A"),
-    # collapse them into one word
-    text = re.sub(r"(?<!\S)((?:\w )+\w)(?!\S)", lambda m: m.group(1).replace(" ", "") if all(len(p) == 1 for p in m.group(1).split(" ")) else m.group(1), text)
     return text
 
 
-def build_search_query(track: dict) -> str:
-    """Build a search query for squid.wtf from track metadata."""
-    artist = _collapse_spaced_name(track["artist"])
-    album = _collapse_spaced_name(track["album"])
-    return f"{artist} {album}"
+def _classify_quality(quality_str: str | None, audio_quality_str: str | None = None) -> str:
+    """Classify a Monochrome result as hi_res or lossless."""
+    q = (quality_str or "").upper()
+    aq = (audio_quality_str or "").upper()
+
+    if q == "HI_RES_LOSSLESS" or "HI_RES" in q:
+        return "hi_res"
+    if "24" in aq and ("BIT" in aq or "KHZ" in aq):
+        return "hi_res"
+    if any(rate in aq for rate in ["96KHZ", "192KHZ", "88KHZ", "176KHZ"]):
+        return "hi_res"
+    if q == "LOSSLESS" or "FLAC" in aq:
+        return "lossless"
+    return "lossless"
 
 
-def classify_match(track: dict, result: dict) -> str:
-    """Classify how well a squid.wtf result matches our track."""
-    t_artist = normalize_text(track.get("artist", ""))
-    t_album = normalize_text(track.get("album", ""))
-    t_title = normalize_text(track.get("title", ""))
+def _score_search_result(result: dict, target_artist: str, target_title: str, target_album: str = "") -> int:
+    """Score a MusicGrabber search result for match quality. Higher is better."""
+    score = result.get("quality_score", 0)
 
-    r_artist = normalize_text(result.get("artist", ""))
-    r_album = normalize_text(result.get("album", ""))
-    r_title = normalize_text(result.get("title", ""))
+    # Artist match bonus
+    result_artist = _normalize_text(result.get("channel") or "")
+    norm_artist = _normalize_text(target_artist)
+    if norm_artist and result_artist:
+        artist_words = set(norm_artist.split())
+        result_words = set(result_artist.split())
+        if artist_words and result_words:
+            overlap = len(artist_words & result_words) / len(artist_words)
+            score += int(overlap * 200)
+            # Exact match bonus
+            if norm_artist == result_artist:
+                score += 100
 
-    if t_artist == r_artist and t_album == r_album and t_title == r_title:
-        return "exact"
-    if t_artist == r_artist and (t_album in r_album or r_album in t_album):
-        return "fuzzy"
-    return "none"
+    # Title match bonus
+    result_title = _normalize_text(result.get("title") or "")
+    norm_title = _normalize_text(target_title)
+    if norm_title and result_title:
+        title_words = set(norm_title.split())
+        result_words = set(result_title.split())
+        if title_words:
+            overlap = len(title_words & result_words) / len(title_words)
+            score += int(overlap * 150)
+            if norm_title == result_title:
+                score += 100
 
+    # Album match bonus
+    result_album = _normalize_text(result.get("album") or "")
+    norm_album = _normalize_text(target_album)
+    if norm_album and result_album:
+        album_words = set(norm_album.split())
+        result_words = set(result_album.split())
+        if album_words:
+            overlap = len(album_words & result_words) / len(album_words)
+            score += int(overlap * 100)
 
-def _extract_artist_name(artist_data) -> str:
-    """Extract artist name from Tidal API artist field (can be dict or list)."""
-    if isinstance(artist_data, dict):
-        return artist_data.get("name", "")
-    if isinstance(artist_data, list) and artist_data:
-        return artist_data[0].get("name", "")
-    return str(artist_data) if artist_data else ""
+    # Quality bonus
+    quality = (result.get("quality") or "").upper()
+    if quality == "HI_RES_LOSSLESS":
+        score += 500
+    elif quality == "LOSSLESS":
+        score += 300
+    elif quality == "HIGH":
+        score += 100
 
-
-def _parse_album_result(album: dict) -> dict:
-    """Normalize a Tidal album API result into our format."""
-    return {
-        "tidal_id": album.get("id"),
-        "title": album.get("title", ""),
-        "artist": _extract_artist_name(album.get("artists", album.get("artist"))),
-        "num_tracks": album.get("numberOfTracks", 0),
-        "release_date": album.get("releaseDate", ""),
-        "audio_quality": album.get("audioQuality", ""),
-        "cover": album.get("cover", ""),
-    }
-
-
-def _parse_track_result(track: dict) -> dict:
-    """Normalize a Tidal track API result into our format."""
-    album_data = track.get("album", {})
-    return {
-        "tidal_id": track.get("id"),
-        "title": track.get("title", ""),
-        "artist": _extract_artist_name(track.get("artists", track.get("artist"))),
-        "album": album_data.get("title", "") if isinstance(album_data, dict) else str(album_data),
-        "track_number": track.get("trackNumber", 0),
-        "volume_number": track.get("volumeNumber", 1),
-        "duration": track.get("duration", 0),
-        "audio_quality": track.get("audioQuality", ""),
-        "isrc": track.get("isrc", ""),
-    }
+    return score
 
 
-async def search_albums(query: str, rate_limit: float = 3.0) -> list[dict]:
-    """Search for albums on squid.wtf via triton backend."""
-    await asyncio.sleep(rate_limit)
-    async with httpx.AsyncClient(headers=DEFAULT_HEADERS, timeout=30) as client:
-        resp = await client.get(f"{SEARCH_ALBUMS_HOST}/search/", params={"al": query})
-        resp.raise_for_status()
-        data = resp.json()
-
-    albums_data = data.get("data", {}).get("albums", {}).get("items", [])
-    return [_parse_album_result(a) for a in albums_data]
-
-
-async def search_tracks(query: str, rate_limit: float = 3.0) -> list[dict]:
-    """Search for tracks on squid.wtf via spotisaver backend."""
-    await asyncio.sleep(rate_limit)
-    async with httpx.AsyncClient(headers=DEFAULT_HEADERS, timeout=30) as client:
-        resp = await client.get(f"{SEARCH_TRACKS_HOST}/search/", params={"s": query})
-        resp.raise_for_status()
-        data = resp.json()
-
-    tracks_data = data.get("data", {}).get("items", [])
-    return [_parse_track_result(t) for t in tracks_data]
-
-
-async def get_album_tracks(album_id: int, rate_limit: float = 2.0) -> list[dict]:
-    """Get all tracks for a specific album."""
-    await asyncio.sleep(rate_limit)
-    async with httpx.AsyncClient(headers=DEFAULT_HEADERS, timeout=30) as client:
-        resp = await client.get(f"{SEARCH_ALBUMS_HOST}/album/", params={"id": album_id})
-        resp.raise_for_status()
-        data = resp.json()
-
-    # Album endpoint returns tracks in the response
-    tracks = data.get("tracks", data.get("items", []))
-    if not tracks:
-        # Try nested structure
-        tracks = data.get("data", {}).get("items", [])
-    return [_parse_track_result(t) for t in tracks]
-
-
-async def get_track_info(track_id: int, rate_limit: float = 1.0) -> dict:
-    """Get detailed info for a specific track."""
-    await asyncio.sleep(rate_limit)
-    async with httpx.AsyncClient(headers=DEFAULT_HEADERS, timeout=30) as client:
-        resp = await client.get(f"{TRACK_INFO_HOST}/info/", params={"id": track_id})
-        resp.raise_for_status()
-        return _parse_track_result(resp.json())
-
-
-async def get_download_url(track_id: int, quality: str = QUALITY_HI_RES, rate_limit: float = 2.0) -> dict:
-    """Get the FLAC download URL for a track.
-
-    Returns dict with: url, bit_depth, sample_rate, audio_quality, mime_type
-    Falls back to LOSSLESS if HI_RES_LOSSLESS unavailable.
-    """
-    await asyncio.sleep(rate_limit)
-    async with httpx.AsyncClient(headers=DEFAULT_HEADERS, timeout=30) as client:
-        resp = await client.get(
-            f"{TRACK_DOWNLOAD_HOST}/track/",
-            params={"id": track_id, "quality": quality},
-        )
-
-        # Fall back to CD quality if hi-res fails
-        if resp.status_code != 200 and quality == QUALITY_HI_RES:
-            logger.info(f"Hi-res unavailable for track {track_id}, falling back to lossless")
-            await asyncio.sleep(rate_limit)
-            resp = await client.get(
-                f"{TRACK_DOWNLOAD_HOST}/track/",
-                params={"id": track_id, "quality": QUALITY_LOSSLESS},
-            )
-
-        resp.raise_for_status()
-        data = resp.json()
-
-    # Decode the base64 manifest to extract the download URL
-    manifest_b64 = data.get("manifest", "")
-    manifest = json.loads(base64.b64decode(manifest_b64))
-
-    urls = manifest.get("urls", [])
-    if not urls:
-        raise ValueError(f"No download URL found for track {track_id}")
-
-    return {
-        "url": urls[0],
-        "bit_depth": data.get("bitDepth", 16),
-        "sample_rate": data.get("sampleRate", 44100),
-        "audio_quality": data.get("audioQuality", "LOSSLESS"),
-        "mime_type": manifest.get("mimeType", "audio/flac"),
-    }
-
-
-async def download_flac(url: str, dest: Path, rate_limit: float = 2.0) -> Path:
-    """Download a FLAC file from the Tidal CDN to the staging directory."""
-    await asyncio.sleep(rate_limit)
-    dest = Path(dest)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-
-    async with httpx.AsyncClient(timeout=300) as client:
-        async with client.stream("GET", url) as resp:
-            resp.raise_for_status()
-            with open(dest, "wb") as f:
-                async for chunk in resp.aiter_bytes(8192):
-                    f.write(chunk)
-    return dest
-
-
-async def find_album_match(artist: str, album: str, rate_limit: float = 3.0) -> dict | None:
-    """Search for an album and return the best match, or None.
-
-    Returns the parsed album dict with tidal_id if found.
-    """
-    query = f"{_collapse_spaced_name(artist)} {_collapse_spaced_name(album)}"
-    results = await search_albums(query, rate_limit)
-
-    n_artist = normalize_text(artist)
-    n_album = normalize_text(album)
-
-    # Try exact match first
-    for r in results:
-        if normalize_text(r["artist"]) == n_artist and normalize_text(r["title"]) == n_album:
-            return r
-
-    # Try fuzzy (artist matches, album is substring)
-    for r in results:
-        r_artist = normalize_text(r["artist"])
-        r_title = normalize_text(r["title"])
-        if r_artist == n_artist and (n_album in r_title or r_title in n_album):
-            return r
-
-    return None
-
-
-async def find_and_match_track(
-    artist: str, album: str, title: str, track_number: int = 0, rate_limit: float = 3.0
+async def search_for_flac(
+    artist: str,
+    album: str,
+    title: str,
+    timeout_s: int = 20,
+    hi_res_only: bool = False,
 ) -> dict | None:
-    """Find a specific track on Tidal by searching the album, then matching the track.
-
-    Returns dict with tidal track info + match_type, or None.
     """
-    album_match = await find_album_match(artist, album, rate_limit)
-    if not album_match:
+    Search MusicGrabber (Monochrome/Tidal) for a FLAC version of the given track.
+    Returns the best match dict or None.
+
+    Return shape: {mg_track_id, title, artist, album, quality, match_quality, source_url}
+    """
+    query = f"{artist} {title}" if not album else f"{artist} {album} {title}"
+
+    import asyncio as _asyncio
+
+    max_retries = 8
+    async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT) as client:
+        data = None
+        for attempt in range(max_retries):
+            try:
+                resp = await client.post(
+                    f"{MUSICGRABBER_URL}/api/search",
+                    json={
+                        "query": query,
+                        "source": "monochrome",
+                        "limit": 10,
+                    },
+                )
+                if resp.status_code == 429:
+                    wait = 3 ** attempt + 1  # 2, 4, 10, 28, 82... (capped at 30s)
+                    wait = min(wait, 30)
+                    logger.info(f"429 rate limited for '{query}', retry {attempt+1}/{max_retries} in {wait}s")
+                    await _asyncio.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    wait = 3 ** attempt + 1
+                    wait = min(wait, 30)
+                    logger.info(f"429 rate limited for '{query}', retry {attempt+1}/{max_retries} in {wait}s")
+                    await _asyncio.sleep(wait)
+                    continue
+                logger.warning(f"MusicGrabber search failed for '{query}': {e}")
+                return None
+            except Exception as e:
+                logger.warning(f"MusicGrabber search failed for '{query}': {e}")
+                return None
+        if data is None:
+            logger.warning(f"MusicGrabber search exhausted retries for '{query}'")
+            return None
+
+    results = data.get("results") or []
+    if not results:
         return None
 
-    tracks = await get_album_tracks(album_match["tidal_id"], rate_limit)
+    # Score and rank results
+    scored = []
+    for r in results:
+        match_score = _score_search_result(r, artist, title, album)
+        scored.append((r, match_score))
 
-    n_title = normalize_text(title)
+    scored.sort(key=lambda x: x[1], reverse=True)
+    best_result, best_score = scored[0]
 
-    # Try track number match first (most reliable)
-    if track_number > 0:
-        for t in tracks:
-            if t["track_number"] == track_number and normalize_text(t["title"]) == n_title:
-                return {**t, "match_type": "exact", "album_tidal_id": album_match["tidal_id"]}
+    # Minimum score threshold — must match artist reasonably
+    if best_score < 200:
+        logger.debug(f"Best result for '{query}' scored too low ({best_score}), skipping")
+        return None
 
-    # Try exact title match
-    for t in tracks:
-        if normalize_text(t["title"]) == n_title:
-            return {**t, "match_type": "exact", "album_tidal_id": album_match["tidal_id"]}
+    quality = _classify_quality(
+        best_result.get("quality"),
+        best_result.get("audio_quality"),
+    )
 
-    # Try fuzzy title match (substring)
-    for t in tracks:
-        t_title = normalize_text(t["title"])
-        if n_title in t_title or t_title in n_title:
-            return {**t, "match_type": "fuzzy", "album_tidal_id": album_match["tidal_id"]}
+    if hi_res_only and quality != "hi_res":
+        return None
 
-    return None
+    return {
+        "mg_track_id": best_result.get("video_id"),
+        "title": best_result.get("title"),
+        "artist": best_result.get("channel"),
+        "album": best_result.get("album"),
+        "quality": best_result.get("quality"),
+        "match_quality": quality,
+        "source_url": best_result.get("source_url"),
+        "match_score": best_score,
+    }
+
+
+async def search_album(
+    artist: str,
+    album: str,
+    tracks: list[dict],
+    timeout_s: int = 15,
+    inter_search_delay: float = 1.5,
+) -> dict[int, dict]:
+    """
+    Search MusicGrabber for each track in an album group.
+    Returns a dict keyed by track_id → best matching result dict.
+
+    tracks: list of {id, title, track_number, format, bit_depth}
+    inter_search_delay: seconds to wait between track searches (rate limit protection)
+    """
+    import asyncio as _asyncio
+
+    results: dict[int, dict] = {}
+
+    for i, track in enumerate(tracks):
+        track_id = track["id"]
+        title = track.get("title") or ""
+        is_flac_source = (track.get("format") or "").lower() == "flac"
+
+        # Throttle between searches to avoid 429s
+        if i > 0 and inter_search_delay > 0:
+            await _asyncio.sleep(inter_search_delay)
+
+        match = await search_for_flac(
+            artist=artist,
+            album=album,
+            title=title,
+            timeout_s=timeout_s,
+            hi_res_only=is_flac_source,
+        )
+
+        if match:
+            results[track_id] = match
+
+    logger.info(
+        f"Album search '{artist} - {album}': "
+        f"{len(results)}/{len(tracks)} tracks matched"
+    )
+    return results
+
+
+def download_track(mg_track_id: str, artist: str = "", title: str = "") -> str:
+    """
+    Initiate a download via MusicGrabber.
+    POST /api/download with the monochrome track ID.
+    Returns the MusicGrabber job_id.
+    """
+    resp = httpx.post(
+        f"{MUSICGRABBER_URL}/api/download",
+        json={
+            "video_id": mg_track_id,
+            "source": "monochrome",
+            "source_url": f"https://monochrome.tf/track/{mg_track_id}",
+            "artist": artist,
+            "title": title,
+            "convert_to_flac": True,
+            "download_type": "single",
+        },
+        timeout=HTTP_TIMEOUT,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    job_id = data.get("job_id")
+    if not job_id:
+        raise RuntimeError(f"MusicGrabber returned no job_id for track {mg_track_id}")
+    return job_id
+
+
+def get_download_status(mg_job_id: str) -> dict | None:
+    """
+    Get download status for a MusicGrabber job.
+    Returns {status, artist, title, audio_quality, error} or None.
+    """
+    try:
+        resp = httpx.get(
+            f"{MUSICGRABBER_URL}/api/jobs/{mg_job_id}",
+            timeout=HTTP_TIMEOUT,
+        )
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        logger.debug(f"get_download_status error for job {mg_job_id}: {e}")
+        return None
+
+
+def wait_for_download(mg_job_id: str, timeout: int = DOWNLOAD_POLL_TIMEOUT) -> dict:
+    """
+    Poll MusicGrabber until the download completes or fails.
+    Returns the final job status dict.
+    Raises RuntimeError on timeout or failure.
+    """
+    elapsed = 0
+    while elapsed < timeout:
+        time.sleep(DOWNLOAD_POLL_INTERVAL)
+        elapsed += DOWNLOAD_POLL_INTERVAL
+
+        status = get_download_status(mg_job_id)
+        if status is None:
+            continue
+
+        job_status = status.get("status", "")
+        if job_status in ("completed", "completed_with_errors"):
+            return status
+        elif job_status == "failed":
+            error = status.get("error", "Unknown error")
+            raise RuntimeError(f"MusicGrabber download failed: {error}")
+
+    raise RuntimeError(f"MusicGrabber download timed out after {timeout}s (job {mg_job_id})")
+
+
+async def check_connected() -> bool:
+    """Return True if MusicGrabber API is reachable."""
+    async with httpx.AsyncClient(timeout=5) as client:
+        try:
+            resp = await client.get(f"{MUSICGRABBER_URL}/api/version")
+            return resp.status_code == 200
+        except Exception:
+            return False

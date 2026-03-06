@@ -1,150 +1,168 @@
-from fastapi import APIRouter
-from database import get_db
-from dedup import group_by_metadata, find_duplicates
-from file_manager import trash_file
-from pathlib import Path
 import logging
 import os
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException
+
+from database import get_db
+from file_manager import trash_file
+from scanner import quality_score
 
 logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/dupes", tags=["dupes"])
 
 
-def get_auto_resolve_threshold() -> float:
-    """Get the auto-resolve confidence threshold from settings."""
+def _resolve_group_internal(group_id: int, keep_track_id: int) -> int:
+    """
+    Internal: trash all members of a dupe group except the keeper.
+    Records file_transactions for each trashed file.
+    Returns number of files moved to trash.
+    """
+    trash_root = os.environ.get("TRASH_PATH", "/trash")
+    music_root = os.environ.get("MUSIC_PATH", "/music")
+
     with get_db() as db:
-        row = db.execute("SELECT value FROM settings WHERE key = 'auto_resolve_threshold'").fetchone()
-        return float(row["value"]) if row else 0
+        members = db.execute(
+            "SELECT track_id FROM dupe_group_members WHERE group_id = ?",
+            (group_id,),
+        ).fetchall()
+        member_ids = [m["track_id"] for m in members]
+
+        moved = 0
+        for tid in member_ids:
+            if tid == keep_track_id:
+                continue
+            track = db.execute(
+                "SELECT * FROM tracks WHERE id = ? AND status = 'active'", (tid,)
+            ).fetchone()
+            if not track:
+                continue
+
+            file_path = track["file_path"]
+            if not Path(file_path).exists():
+                # File already gone — just mark as deleted
+                db.execute(
+                    "UPDATE tracks SET status = 'deleted' WHERE id = ?", (tid,)
+                )
+                continue
+
+            try:
+                dest = trash_file(file_path, trash_root, music_root)
+                db.execute(
+                    "UPDATE tracks SET status = 'trashed' WHERE id = ?", (tid,)
+                )
+                db.execute(
+                    """INSERT INTO file_transactions
+                       (track_id, action, source_path, dest_path, state)
+                       VALUES (?, 'trash', ?, ?, 'committed')""",
+                    (tid, file_path, dest),
+                )
+                moved += 1
+            except FileNotFoundError:
+                # NFS stale cache: exists() returned True but file is gone — treat as deleted
+                logger.warning(f"Track {tid} not found at {file_path} during trash — marking deleted")
+                db.execute("UPDATE tracks SET status = 'deleted' WHERE id = ?", (tid,))
+            except Exception as e:
+                logger.error(f"Failed to trash track {tid} at {file_path}: {e}")
+                raise
+
+        db.execute(
+            "UPDATE dupe_groups SET resolved = 1, kept_track_id = ? WHERE id = ?",
+            (keep_track_id, group_id),
+        )
+
+    return moved
 
 
-def auto_resolve_high_confidence(threshold: float = None) -> int:
-    """Auto-resolve duplicate groups with confidence >= threshold. Returns count resolved."""
-    if threshold is None:
-        threshold = get_auto_resolve_threshold()
-    if threshold <= 0:
-        return 0
-
+@router.get("")
+@router.get("/")
+def list_dupes():
+    """
+    Return all dupe groups with full track info.
+    Each group includes tracks sorted by quality_score desc, with is_winner flag.
+    """
     with get_db() as db:
         groups = db.execute(
-            "SELECT id, kept_track_id, confidence FROM dupe_groups WHERE resolved = 0 AND confidence >= ?",
-            (threshold,)
+            """SELECT dg.id, dg.match_type, dg.confidence, dg.resolved, dg.kept_track_id,
+                      GROUP_CONCAT(dgm.track_id) as member_ids
+               FROM dupe_groups dg
+               JOIN dupe_group_members dgm ON dg.id = dgm.group_id
+               GROUP BY dg.id
+               ORDER BY dg.resolved ASC, dg.confidence DESC"""
         ).fetchall()
-
-    resolved = 0
-    for g in groups:
-        try:
-            resolve_group(g["id"], g["kept_track_id"])
-            resolved += 1
-        except Exception as e:
-            logger.error(f"Auto-resolve failed for group {g['id']}: {e}")
-
-    if resolved > 0:
-        logger.info(f"Auto-resolved {resolved} duplicate groups (threshold: {threshold*100:.0f}%)")
-    return resolved
-
-@router.post("/analyze")
-def analyze_dupes():
-    with get_db() as db:
-        rows = db.execute("SELECT * FROM tracks WHERE status = 'active'").fetchall()
-        tracks = [dict(r) for r in rows]
-
-    groups = group_by_metadata(tracks)
-    results = []
-
-    with get_db() as db:
-        db.execute("DELETE FROM dupe_group_members WHERE group_id IN (SELECT id FROM dupe_groups WHERE resolved = 0)")
-        db.execute("DELETE FROM dupe_groups WHERE resolved = 0")
-
-        for group in groups:
-            result = find_duplicates(group)
-            cursor = db.execute(
-                "INSERT INTO dupe_groups (match_type, confidence, kept_track_id) VALUES (?, ?, ?)",
-                ("metadata", result["confidence"], result["keep_id"])
-            )
-            group_id = cursor.lastrowid
-            for track in group:
-                db.execute(
-                    "INSERT INTO dupe_group_members (group_id, track_id) VALUES (?, ?)",
-                    (group_id, track["id"])
-                )
-            results.append({"group_id": group_id, **result})
-
-    auto_resolved = auto_resolve_high_confidence()
-    return {"groups_found": len(results), "auto_resolved": auto_resolved, "results": results}
-
-@router.get("/")
-def list_dupes(resolved: bool = None):
-    with get_db() as db:
-        if resolved is None:
-            groups = db.execute("""
-                SELECT dg.*, GROUP_CONCAT(dgm.track_id) as member_ids
-                FROM dupe_groups dg
-                JOIN dupe_group_members dgm ON dg.id = dgm.group_id
-                GROUP BY dg.id
-            """).fetchall()
-        else:
-            groups = db.execute("""
-                SELECT dg.*, GROUP_CONCAT(dgm.track_id) as member_ids
-                FROM dupe_groups dg
-                JOIN dupe_group_members dgm ON dg.id = dgm.group_id
-                WHERE dg.resolved = ?
-                GROUP BY dg.id
-            """, (int(resolved),)).fetchall()
 
         result = []
         for g in groups:
-            member_ids = [int(x) for x in g["member_ids"].split(",")]
+            raw_ids = g["member_ids"] or ""
+            member_ids = [int(x) for x in raw_ids.split(",") if x.strip()]
+            if not member_ids:
+                continue
+
             placeholders = ",".join("?" * len(member_ids))
-            members = db.execute(
-                f"SELECT * FROM tracks WHERE id IN ({placeholders})", member_ids
+            tracks = db.execute(
+                f"SELECT * FROM tracks WHERE id IN ({placeholders})",
+                member_ids,
             ).fetchall()
+
+            track_list = []
+            for t in tracks:
+                td = dict(t)
+                td["quality_score"] = quality_score(td)
+                td["is_winner"] = (td["id"] == g["kept_track_id"])
+                track_list.append(td)
+
+            # Sort by quality score descending
+            track_list.sort(key=lambda t: t["quality_score"], reverse=True)
+
             result.append({
-                "group": dict(g),
-                "members": [dict(m) for m in members]
+                "id": g["id"],
+                "confidence": g["confidence"],
+                "match_type": g["match_type"],
+                "resolved": bool(g["resolved"]),
+                "tracks": track_list,
             })
 
     return result
 
+
 @router.post("/{group_id}/resolve")
-def resolve_group(group_id: int, keep_track_id: int):
-    trash_dir = Path(os.environ.get("TRASH_PATH", "/trash"))
-    music_root = Path(os.environ.get("MUSIC_PATH", "/music"))
-
+def resolve_dupe(group_id: int):
+    """
+    Resolve a dupe group by trashing losers. The winner is already recorded
+    in dupe_groups.kept_track_id from the analysis phase.
+    """
     with get_db() as db:
-        members = db.execute(
-            "SELECT track_id FROM dupe_group_members WHERE group_id = ?", (group_id,)
-        ).fetchall()
-        member_ids = [m["track_id"] for m in members]
+        group = db.execute(
+            "SELECT id, kept_track_id, resolved FROM dupe_groups WHERE id = ?",
+            (group_id,),
+        ).fetchone()
 
-        for tid in member_ids:
-            if tid == keep_track_id:
-                continue
-            track = db.execute("SELECT * FROM tracks WHERE id = ?", (tid,)).fetchone()
-            if track:
-                dest = trash_file(Path(track["file_path"]), trash_dir, music_root)
-                db.execute("UPDATE tracks SET status = 'trashed' WHERE id = ?", (tid,))
-                db.execute(
-                    "INSERT INTO file_actions (track_id, action, source_path, dest_path) VALUES (?, 'trash', ?, ?)",
-                    (tid, track["file_path"], dest)
-                )
+    if not group:
+        raise HTTPException(status_code=404, detail="Dupe group not found")
+    if group["resolved"]:
+        return {"ok": True, "moved": 0, "already_resolved": True}
 
-        db.execute(
-            "UPDATE dupe_groups SET resolved = 1, kept_track_id = ? WHERE id = ?",
-            (keep_track_id, group_id)
-        )
+    moved = _resolve_group_internal(group_id, group["kept_track_id"])
+    return {"ok": True, "moved": moved}
 
-    return {"status": "resolved", "kept": keep_track_id}
 
 @router.post("/resolve-all")
-def resolve_all():
+def resolve_all_dupes():
+    """Resolve all unresolved dupe groups."""
     with get_db() as db:
         groups = db.execute(
             "SELECT id, kept_track_id FROM dupe_groups WHERE resolved = 0"
         ).fetchall()
 
     resolved = 0
+    errors = 0
     for g in groups:
-        resolve_group(g["id"], g["kept_track_id"])
-        resolved += 1
+        try:
+            _resolve_group_internal(g["id"], g["kept_track_id"])
+            resolved += 1
+        except Exception as e:
+            logger.error(f"resolve-all: failed group {g['id']}: {e}")
+            errors += 1
 
-    return {"resolved": resolved}
+    return {"resolved": resolved, "errors": errors}

@@ -8,3 +8,5 @@ dist/
 staging/
 trash/
 .pytest_cache/
+slskd/
+data/

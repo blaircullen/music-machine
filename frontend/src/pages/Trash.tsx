@@ -101,16 +101,15 @@ export default function Trash() {
         </Button>
       </div>
 
-      <Modal open={showConfirm} onClose={() => setShowConfirm(false)}>
-        <h3 className="text-lg font-semibold font-[family-name:var(--font-family-display)] mb-2">Confirm Empty Trash</h3>
-        <p className="text-base-400 text-sm mb-6">
-          This will permanently delete {items.length} item{items.length !== 1 ? 's' : ''}. This action cannot be undone.
-        </p>
-        <div className="flex gap-3 justify-end">
-          <Button variant="secondary" onClick={() => setShowConfirm(false)}>Cancel</Button>
-          <Button variant="danger" onClick={handleEmpty}>Delete Permanently</Button>
-        </div>
-      </Modal>
+      <Modal
+        open={showConfirm}
+        onClose={() => setShowConfirm(false)}
+        title="Confirm Empty Trash"
+        message={`This will permanently delete ${items.length} item${items.length !== 1 ? 's' : ''}. This action cannot be undone.`}
+        confirmLabel="Delete Permanently"
+        confirmVariant="danger"
+        onConfirm={handleEmpty}
+      />
 
       <div className="w-fit">
         <StatCard icon={HardDrive} label="Trash Size" value={sizeDisplay} />
@@ -128,13 +127,13 @@ export default function Trash() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-glass-border text-base-400 text-left">
-                  <th className="px-4 py-3 font-medium">Artist</th>
-                  <th className="px-4 py-3 font-medium">Title</th>
-                  <th className="px-4 py-3 font-medium">Album</th>
-                  <th className="px-4 py-3 font-medium">Format</th>
-                  <th className="px-4 py-3 font-medium">Original Path</th>
-                  <th className="px-4 py-3 font-medium">Trashed</th>
-                  <th className="px-4 py-3 font-medium"></th>
+                  <th scope="col" className="px-4 py-3 font-medium">Artist</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Title</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Album</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Format</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Original Path</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Trashed</th>
+                  <th scope="col" className="px-4 py-3 font-medium"></th>
                 </tr>
               </thead>
               <AnimatePresence>

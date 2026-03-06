@@ -1,54 +1,56 @@
-import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom'
-import { AnimatePresence, motion } from 'motion/react'
+import { lazy, Suspense, useState } from 'react'
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { Menu } from 'lucide-react'
 import { Sidebar } from './components/layout/Sidebar'
-import { ActivityPanel } from './components/layout/ActivityPanel'
-import { ScanProvider } from './hooks/ScanContext'
-import { Toaster } from './components/ui'
-import Dashboard from './pages/Dashboard'
-import Duplicates from './pages/Duplicates'
-import Upgrades from './pages/Upgrades'
-import Trash from './pages/Trash'
-import Settings from './pages/Settings'
 
-function AnimatedRoutes() {
-  const location = useLocation()
+const Dashboard = lazy(() => import('./pages/Dashboard'))
+const Library = lazy(() => import('./pages/Library'))
+const JobLog = lazy(() => import('./pages/JobLog'))
+const Upgrades = lazy(() => import('./pages/Upgrades'))
+const Tagger = lazy(() => import('./pages/Tagger'))
 
+function PageFallback() {
   return (
-    <AnimatePresence mode="wait">
-      <motion.div
-        key={location.pathname}
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: -8 }}
-        transition={{ duration: 0.2 }}
-      >
-        <Routes location={location}>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/duplicates" element={<Duplicates />} />
-          <Route path="/upgrades" element={<Upgrades />} />
-          <Route path="/trash" element={<Trash />} />
-          <Route path="/settings" element={<Settings />} />
-        </Routes>
-      </motion.div>
-    </AnimatePresence>
+    <div className="flex items-center justify-center h-64">
+      <div className="w-5 h-5 border-2 border-[#d4a017] border-t-transparent rounded-full animate-spin" />
+    </div>
   )
 }
 
 export default function App() {
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
+
   return (
     <BrowserRouter>
-      <ScanProvider>
-        <div className="min-h-screen">
-          <Sidebar />
-          <main className="ml-[72px] p-8">
-            <div className="mb-6 flex justify-end">
-              <ActivityPanel />
-            </div>
-            <AnimatedRoutes />
-          </main>
-          <Toaster />
+      <div className="min-h-screen flex">
+        <Sidebar mobileOpen={mobileNavOpen} onMobileClose={() => setMobileNavOpen(false)} />
+
+        {/* Mobile header */}
+        <div className="fixed top-0 left-0 right-0 h-14 bg-[#13151f] border-b border-[#2a2d3a] flex items-center px-4 z-30 lg:hidden">
+          <button
+            onClick={() => setMobileNavOpen(true)}
+            aria-label="Open navigation"
+            className="p-2 text-slate-400 hover:text-white rounded-lg transition-colors"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+          <span className="ml-3 text-sm font-bold text-white font-[family-name:var(--font-family-display)]">
+            Music Machine
+          </span>
         </div>
-      </ScanProvider>
+
+        <main className="lg:ml-[220px] flex-1 p-4 pt-18 lg:p-8 lg:pt-8 min-h-screen min-w-0 overflow-x-hidden">
+          <Suspense fallback={<PageFallback />}>
+            <Routes>
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/library" element={<Library />} />
+              <Route path="/jobs" element={<JobLog />} />
+              <Route path="/upgrades" element={<Upgrades />} />
+              <Route path="/tagger" element={<Tagger />} />
+            </Routes>
+          </Suspense>
+        </main>
+      </div>
     </BrowserRouter>
   )
 }

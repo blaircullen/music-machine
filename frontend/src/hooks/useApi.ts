@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import { apiGet } from '../lib/api'
 
+// Generic data-fetching hook. Uses native fetch directly.
 interface UseApiResult<T> {
   data: T | null
   loading: boolean
@@ -16,7 +16,11 @@ export function useApi<T>(url: string): UseApiResult<T> {
   const refetch = useCallback(() => {
     setLoading(true)
     setError(null)
-    apiGet<T>(url)
+    fetch(url)
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.json() as Promise<T>
+      })
       .then(setData)
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false))
