@@ -102,6 +102,52 @@ def _score_search_result(result: dict, target_artist: str, target_title: str, ta
     return score
 
 
+async def _execute_search(client: httpx.AsyncClient, query: str, max_retries: int = 8) -> list:
+    """Execute a single MusicGrabber search query with 429 retry logic. Returns result list."""
+    import asyncio as _asyncio
+
+    data = None
+    for attempt in range(max_retries):
+        try:
+            resp = await client.post(
+                f"{MUSICGRABBER_URL}/api/search",
+                json={"query": query, "source": "monochrome", "limit": 10},
+            )
+            if resp.status_code == 429:
+                wait = min(3 ** attempt + 1, 30)
+                logger.info(f"429 rate limited for '{query}', retry {attempt+1}/{max_retries} in {wait}s")
+                await _asyncio.sleep(wait)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            break
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                wait = min(3 ** attempt + 1, 30)
+                logger.info(f"429 rate limited for '{query}', retry {attempt+1}/{max_retries} in {wait}s")
+                await _asyncio.sleep(wait)
+                continue
+            logger.warning(f"MusicGrabber search failed for '{query}': {e}")
+            return []
+        except Exception as e:
+            logger.warning(f"MusicGrabber search failed for '{query}': {e}")
+            return []
+
+    if data is None:
+        logger.warning(f"MusicGrabber search exhausted retries for '{query}'")
+        return []
+    return data.get("results") or []
+
+
+def _pick_best(results: list, artist: str, title: str, album: str) -> tuple[dict, int] | tuple[None, int]:
+    """Score results and return (best_result, best_score) or (None, 0)."""
+    if not results:
+        return None, 0
+    scored = [(r, _score_search_result(r, artist, title, album)) for r in results]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[0]
+
+
 async def search_for_flac(
     artist: str,
     album: str,
@@ -114,66 +160,36 @@ async def search_for_flac(
     Returns the best match dict or None.
 
     Return shape: {mg_track_id, title, artist, album, quality, match_quality, source_url}
+
+    Strategy: try artist+album+title first. If no results or score too low (common for
+    compilation-tagged tracks like "Now That's What I Call Music"), retry with artist+title only.
     """
-    query = f"{artist} {title}" if not album else f"{artist} {album} {title}"
-
-    import asyncio as _asyncio
-
-    max_retries = 8
     async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT) as client:
-        data = None
-        for attempt in range(max_retries):
-            try:
-                resp = await client.post(
-                    f"{MUSICGRABBER_URL}/api/search",
-                    json={
-                        "query": query,
-                        "source": "monochrome",
-                        "limit": 10,
-                    },
+        best_result, best_score = None, 0
+
+        # Primary query: include album for specificity
+        if album:
+            primary_query = f"{artist} {album} {title}"
+            results = await _execute_search(client, primary_query)
+            best_result, best_score = _pick_best(results, artist, title, album)
+            if best_score < 200:
+                logger.debug(
+                    f"Primary query '{primary_query}' scored {best_score}, "
+                    f"falling back to artist+title only"
                 )
-                if resp.status_code == 429:
-                    wait = 3 ** attempt + 1  # 2, 4, 10, 28, 82... (capped at 30s)
-                    wait = min(wait, 30)
-                    logger.info(f"429 rate limited for '{query}', retry {attempt+1}/{max_retries} in {wait}s")
-                    await _asyncio.sleep(wait)
-                    continue
-                resp.raise_for_status()
-                data = resp.json()
-                break
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 429:
-                    wait = 3 ** attempt + 1
-                    wait = min(wait, 30)
-                    logger.info(f"429 rate limited for '{query}', retry {attempt+1}/{max_retries} in {wait}s")
-                    await _asyncio.sleep(wait)
-                    continue
-                logger.warning(f"MusicGrabber search failed for '{query}': {e}")
-                return None
-            except Exception as e:
-                logger.warning(f"MusicGrabber search failed for '{query}': {e}")
-                return None
-        if data is None:
-            logger.warning(f"MusicGrabber search exhausted retries for '{query}'")
+
+        # Fallback: artist+title only (no album) — handles compilation-tagged tracks
+        if best_score < 200:
+            fallback_query = f"{artist} {title}"
+            fallback_results = await _execute_search(client, fallback_query)
+            fallback_result, fallback_score = _pick_best(fallback_results, artist, title, album)
+            if fallback_score > best_score:
+                best_result, best_score = fallback_result, fallback_score
+                logger.debug(f"Fallback query '{fallback_query}' scored {fallback_score}")
+
+        if best_score < 200 or best_result is None:
+            logger.debug(f"No suitable match for '{artist} - {title}' (best score: {best_score})")
             return None
-
-    results = data.get("results") or []
-    if not results:
-        return None
-
-    # Score and rank results
-    scored = []
-    for r in results:
-        match_score = _score_search_result(r, artist, title, album)
-        scored.append((r, match_score))
-
-    scored.sort(key=lambda x: x[1], reverse=True)
-    best_result, best_score = scored[0]
-
-    # Minimum score threshold — must match artist reasonably
-    if best_score < 200:
-        logger.debug(f"Best result for '{query}' scored too low ({best_score}), skipping")
-        return None
 
     quality = _classify_quality(
         best_result.get("quality"),
