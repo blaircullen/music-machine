@@ -64,7 +64,13 @@ async def lifespan(app: FastAPI):
             )
             if cur.rowcount:
                 logger.info(f"Cleaned up {cur.rowcount} orphaned running job(s)")
-                # Reset any tracks left in mid-flight states by the crashed job
+                # Reset any tracks left in mid-flight states by the crashed job.
+                # 'searching' rows that already have mg_track_id set completed their
+                # search before the crash — promote them to 'found' rather than losing the result.
+                db.execute(
+                    "UPDATE upgrade_queue SET status='found' "
+                    "WHERE status='searching' AND mg_track_id IS NOT NULL"
+                )
                 db.execute(
                     "UPDATE upgrade_queue SET status='pending' "
                     "WHERE status IN ('searching', 'downloading')"
