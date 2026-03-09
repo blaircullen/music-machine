@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Radio, Plus, RefreshCw, Trash2, Check, X, Headphones, Music2 } from 'lucide-react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
 import { GlassCard } from '../components/ui/GlassCard'
 import { Button } from '../components/ui/Button'
@@ -19,22 +19,26 @@ import toast from 'react-hot-toast'
 // ------------------------------------------------------------------
 
 function EqualizerBars({ active }: { active: boolean }) {
+  const reduced = useReducedMotion()
   const heights = [0.45, 0.80, 1.0, 0.65, 0.85]
   return (
-    <div className="flex items-end gap-[2px] h-3.5 shrink-0">
+    <div className="flex items-end gap-[2px] h-3.5 shrink-0" aria-hidden="true">
       {heights.map((h, i) => (
         <motion.div
           key={i}
           className="w-[3px] rounded-full"
-          style={{ backgroundColor: active ? '#d4a017' : 'rgba(212,160,23,0.35)' }}
-          animate={{
+          style={{
+            backgroundColor: active ? '#d4a017' : 'rgba(212,160,23,0.35)',
+            height: reduced ? `${h * (active ? 14 : 7)}px` : undefined,
+          }}
+          animate={reduced ? undefined : {
             height: [
               `${h * (active ? 14 : 7)}px`,
               `${(1.05 - h) * (active ? 14 : 7) + 1}px`,
               `${h * (active ? 14 : 7)}px`,
             ],
           }}
-          transition={{
+          transition={reduced ? undefined : {
             duration: active ? 0.45 : 1.8,
             repeat: Infinity,
             delay: i * (active ? 0.07 : 0.22),
@@ -85,30 +89,53 @@ interface TrackSearchProps {
   disabled?: boolean
 }
 
+const LISTBOX_ID = 'track-search-results'
+const INPUT_ID = 'track-search-input'
+
 function TrackSearch({ onSelect, disabled }: TrackSearchProps) {
   const [q, setQ] = useState('')
   const [results, setResults] = useState<SeedTrack[]>([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
+  const [searchError, setSearchError] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current)
-    if (q.length < 2) { setResults([]); setOpen(false); return }
+    if (q.length < 2) {
+      setResults([])
+      setOpen(false)
+      setSearchError(false)
+      abortRef.current?.abort()
+      return
+    }
     debounceRef.current = setTimeout(async () => {
+      abortRef.current?.abort()
+      const controller = new AbortController()
+      abortRef.current = controller
       setLoading(true)
+      setSearchError(false)
       try {
-        const res = await searchStationTracks(q)
-        setResults(res)
-        setOpen(res.length > 0)
-      } catch {
-        setResults([])
+        const res = await searchStationTracks(q, controller.signal)
+        if (!controller.signal.aborted) {
+          setResults(res)
+          setOpen(res.length > 0)
+        }
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setResults([])
+          setSearchError(true)
+        }
       } finally {
-        setLoading(false)
+        if (!controller.signal.aborted) setLoading(false)
       }
     }, 300)
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+      abortRef.current?.abort()
+    }
   }, [q])
 
   // Close on outside click/touch
@@ -134,12 +161,23 @@ function TrackSearch({ onSelect, disabled }: TrackSearchProps) {
     setOpen(false)
   }
 
+  const isExpanded = open || (q.length >= 2 && !loading && (results.length === 0 || searchError))
+
   return (
     <div ref={wrapperRef} className="relative">
       <div className="flex items-center gap-2 bg-[#1a1d27] border border-[#2a2d3a] rounded-lg px-3 py-2 focus-within:border-[#d4a017]/50">
-        <Music2 className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+        <Music2 className="w-3.5 h-3.5 text-slate-500 shrink-0" aria-hidden="true" />
         <input
+          id={INPUT_ID}
           type="text"
+          role="combobox"
+          aria-expanded={isExpanded}
+          aria-haspopup="listbox"
+          aria-autocomplete="list"
+          aria-controls={LISTBOX_ID}
+          aria-label="Search tracks by artist, title, or album"
+          inputMode="search"
+          autoComplete="off"
           value={q}
           onChange={e => setQ(e.target.value)}
           onFocus={() => results.length > 0 && setOpen(true)}
@@ -148,26 +186,36 @@ function TrackSearch({ onSelect, disabled }: TrackSearchProps) {
           className="flex-1 bg-transparent text-sm text-white placeholder-slate-600 focus:outline-none disabled:opacity-40"
         />
         {loading && (
-          <div className="w-3.5 h-3.5 border border-[#d4a017] border-t-transparent rounded-full animate-spin shrink-0" />
+          <div className="w-3.5 h-3.5 border border-[#d4a017] border-t-transparent rounded-full animate-spin shrink-0" aria-hidden="true" />
         )}
       </div>
 
       <AnimatePresence>
-        {(open || (q.length >= 2 && !loading && results.length === 0)) && (
+        {isExpanded && (
           <motion.div
+            id={LISTBOX_ID}
+            role="listbox"
+            aria-label="Track results"
             initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 4 }}
             transition={{ duration: 0.15 }}
             className="absolute z-50 w-full bottom-full mb-1 bg-[#1e2130] border border-[#2a2d3a] rounded-lg shadow-xl overflow-hidden max-h-64 overflow-y-auto"
           >
-            {results.length === 0 ? (
+            {searchError ? (
+              <div className="px-3 py-3 text-[11px] text-red-400 text-center">
+                Search failed — check your connection
+              </div>
+            ) : results.length === 0 ? (
               <div className="px-3 py-3 text-[11px] text-slate-500 text-center">
                 No tracks found for &ldquo;{q}&rdquo;
               </div>
             ) : results.map(track => (
               <button
                 key={track.id}
+                role="option"
+                aria-selected="false"
+                aria-label={`${track.title} by ${track.artist}`}
                 onMouseDown={e => e.preventDefault()}
                 onClick={() => select(track)}
                 className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-[#2a2d3a] transition-colors text-left"
@@ -250,22 +298,24 @@ function CreateStationModal({ open, onClose, onCreated }: CreateModalProps) {
 
   return (
     <Modal open={open} title="New Station" onClose={handleClose}>
-      <div className="space-y-5 p-1">
+      <div className="space-y-5 p-1 max-h-[65vh] overflow-y-auto overscroll-contain pr-1">
         {/* Name */}
         <div>
-          <label className="text-xs text-slate-400 mb-1 block">Station Name</label>
+          <label htmlFor="station-name" className="text-xs text-slate-400 mb-1 block">Station Name</label>
           <input
+            id="station-name"
             type="text"
             value={name}
             onChange={e => setName(e.target.value)}
             placeholder="e.g. Morning Ride"
+            autoComplete="off"
             className="w-full bg-[#1a1d27] border border-[#2a2d3a] rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#d4a017]/50"
           />
         </div>
 
         {/* Seed Tracks */}
         <div>
-          <label className="text-xs text-slate-400 mb-1 block">
+          <label htmlFor={INPUT_ID} className="text-xs text-slate-400 mb-1 block">
             Seed Tracks <span className="text-slate-600">(3–5 tracks that define the vibe)</span>
           </label>
           <TrackSearch onSelect={addTrack} disabled={seedTracks.length >= 5} />
@@ -278,11 +328,14 @@ function CreateStationModal({ open, onClose, onCreated }: CreateModalProps) {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="text-sm text-[#f0c95c] truncate">{track.title}</div>
-                    <div className="text-[11px] text-slate-400 truncate">{track.artist}</div>
+                    <div className="text-[11px] text-slate-400 truncate">
+                      {track.artist}{track.duration ? ` · ${formatDuration(track.duration)}` : ''}
+                    </div>
                   </div>
                   <button
                     onClick={() => removeTrack(track.id)}
-                    className="text-slate-500 hover:text-white transition-colors shrink-0"
+                    aria-label={`Remove ${track.title} from seed tracks`}
+                    className="p-2 -mr-1 text-slate-500 hover:text-white transition-colors shrink-0"
                   >
                     <X className="w-3.5 h-3.5" />
                   </button>
@@ -292,7 +345,7 @@ function CreateStationModal({ open, onClose, onCreated }: CreateModalProps) {
           )}
           {seedTracks.length === 0 && (
             <p className="text-[11px] text-slate-600 mt-1.5">
-              Search for tracks from your library above. The station will find similar-sounding music using acoustic similarity.
+              Pick 3–5 tracks that define the vibe. We'll find sonically similar music and refresh every morning.
             </p>
           )}
         </div>
@@ -396,7 +449,11 @@ function StationCard({ station, index, onDelete, onRefreshed }: StationCardProps
               </h3>
             </div>
 
-            <div className="text-[10px] text-slate-500 space-y-0.5 min-h-[2.5rem]">
+            <div
+              className="text-[10px] text-slate-500 space-y-0.5 min-h-[2.5rem]"
+              aria-live="polite"
+              aria-atomic="true"
+            >
               <AnimatePresence mode="wait">
                 {refreshing && refreshMsg ? (
                   <motion.div
@@ -419,7 +476,7 @@ function StationCard({ station, index, onDelete, onRefreshed }: StationCardProps
                     <div>
                       <span className="text-slate-400">{station.track_count}</span> tracks
                       {' · '}
-                      <span className="text-slate-400">{station.plex_playlist_name}</span>
+                      <span className="text-slate-400 truncate max-w-[140px] inline-block align-bottom">{station.plex_playlist_name}</span>
                     </div>
                     <div>{lastRefreshed}</div>
                   </motion.div>
@@ -428,13 +485,13 @@ function StationCard({ station, index, onDelete, onRefreshed }: StationCardProps
             </div>
           </div>
 
-          <div className="flex flex-col gap-1.5 shrink-0">
+          <div className="flex flex-col gap-0.5 shrink-0">
             {/* Listen button */}
             {station.track_count > 0 && (
               <button
                 onClick={() => navigate(`/listen/${station.id}`)}
-                title="Open player"
-                className="p-1.5 text-slate-500 hover:text-[#d4a017] transition-colors"
+                aria-label={`Listen to ${station.name}`}
+                className="p-2.5 text-slate-500 hover:text-[#d4a017] transition-colors min-w-[44px] min-h-[44px] flex items-center justify-center"
               >
                 <Headphones className="w-4 h-4" />
               </button>
@@ -442,25 +499,34 @@ function StationCard({ station, index, onDelete, onRefreshed }: StationCardProps
             <button
               onClick={handleRefresh}
               disabled={refreshing}
-              title="Refresh now"
-              className="p-1.5 text-slate-500 hover:text-[#d4a017] transition-colors disabled:opacity-40"
+              aria-label={refreshing ? `Refreshing ${station.name}…` : `Refresh ${station.name}`}
+              className="p-2.5 text-slate-500 hover:text-[#d4a017] transition-colors disabled:opacity-40 min-w-[44px] min-h-[44px] flex items-center justify-center"
             >
               <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
             </button>
             {confirmDelete ? (
               <div className="flex gap-1">
-                <button onClick={handleDelete} title="Confirm delete"
-                  className="p-1 text-red-400 hover:text-red-300 transition-colors">
+                <button
+                  onClick={handleDelete}
+                  aria-label={`Confirm delete ${station.name}`}
+                  className="p-2.5 text-red-400 hover:text-red-300 transition-colors min-w-[44px] min-h-[44px] flex items-center justify-center"
+                >
                   <Check className="w-4 h-4" />
                 </button>
-                <button onClick={() => setConfirmDelete(false)} title="Cancel"
-                  className="p-1 text-slate-500 hover:text-slate-300 transition-colors">
+                <button
+                  onClick={() => setConfirmDelete(false)}
+                  aria-label="Cancel delete"
+                  className="p-2.5 text-slate-500 hover:text-slate-300 transition-colors min-w-[44px] min-h-[44px] flex items-center justify-center"
+                >
                   <X className="w-4 h-4" />
                 </button>
               </div>
             ) : (
-              <button onClick={() => setConfirmDelete(true)} title="Delete station"
-                className="p-1.5 text-slate-500 hover:text-red-400 transition-colors">
+              <button
+                onClick={() => setConfirmDelete(true)}
+                aria-label={`Delete ${station.name}`}
+                className="p-2.5 text-slate-500 hover:text-red-400 transition-colors min-w-[44px] min-h-[44px] flex items-center justify-center"
+              >
                 <Trash2 className="w-4 h-4" />
               </button>
             )}
@@ -522,7 +588,14 @@ export default function Stations() {
           </p>
           {stats && (
             <div className="mt-2 flex items-center gap-2">
-              <div className="h-1.5 w-48 bg-[#1a1d27] rounded-full overflow-hidden">
+              <div
+                role="progressbar"
+                aria-label="Sonic analysis coverage"
+                aria-valuenow={Math.round(stats.coverage_pct)}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                className="h-1.5 w-48 bg-[#1a1d27] rounded-full overflow-hidden"
+              >
                 <div
                   className="h-full bg-[#d4a017]/70 rounded-full transition-all duration-700"
                   style={{ width: `${stats.coverage_pct}%` }}
@@ -551,7 +624,7 @@ export default function Stations() {
         <EmptyState
           icon={Radio}
           title="No stations yet"
-          description="Seed a station with 3–5 tracks that define the vibe. Music Machine will find similar-sounding music in your library using acoustic fingerprinting and generate a fresh playlist every morning."
+          description="Pick 3–5 tracks that define the vibe. We'll find sonically similar music in your library and refresh every morning."
           action={
             <Button onClick={() => setCreateOpen(true)}>
               <Plus className="w-4 h-4 mr-1.5" />

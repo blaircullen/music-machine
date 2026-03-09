@@ -127,10 +127,10 @@ export function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
             />
             <span className="text-xs text-slate-500">
               {mgConnected === null
-                ? 'Checking...'
+                ? 'Checking…'
                 : mgConnected
-                ? '● Connected'
-                : '○ Disconnected'}
+                ? 'Connected'
+                : 'Disconnected'}
             </span>
           </div>
           <p className="text-[10px] text-slate-600 text-center">&copy; 2026 Shawnee Digital</p>

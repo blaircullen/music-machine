@@ -21,20 +21,21 @@ export default function Player() {
   return (
     <div className="fixed inset-0 bg-[#13151f] flex flex-col overflow-hidden">
       {/* Top bar */}
-      <div className="flex items-center justify-between px-5 pt-14 pb-2">
+      <div className="flex items-center justify-between px-5 pb-2" style={{ paddingTop: 'max(56px, env(safe-area-inset-top, 56px))' }}>
         <button
           onClick={() => navigate(-1)}
+          aria-label="Back to stations"
           className="p-2 -ml-2 text-white/40 hover:text-white transition-colors"
         >
           <ChevronLeft className="w-5 h-5" />
         </button>
-        <span className="text-[11px] text-white/40 uppercase tracking-[0.2em] font-medium">
+        <span className="text-[11px] text-white/40 uppercase tracking-[0.2em] font-medium" aria-hidden="true">
           Now Playing
         </span>
         <button
           onClick={controls.regenerate}
           disabled={state.loading}
-          title="Regenerate playlist"
+          aria-label="Regenerate playlist"
           className="p-2 -mr-2 text-white/40 hover:text-[#d4a017] transition-colors disabled:opacity-30"
         >
           <RefreshCw className={`w-4 h-4 ${state.loading ? 'animate-spin' : ''}`} />
@@ -55,7 +56,7 @@ export default function Player() {
           <div className="relative w-full aspect-square">
             <img
               src={currentTrack.artwork_url}
-              alt={currentTrack.album}
+              alt={`Album artwork for ${currentTrack.album} by ${currentTrack.artist}`}
               className="w-full h-full rounded-2xl object-cover shadow-2xl"
               onError={e => { e.currentTarget.style.display = 'none' }}
             />
@@ -101,7 +102,8 @@ export default function Player() {
           <button
             onClick={controls.thumbDown}
             disabled={!currentTrack || !!feedbackState || state.loading}
-            title="Skip and avoid"
+            aria-label="Skip and avoid this track"
+            aria-pressed={feedbackState === 'down'}
             className={`flex-none transition-all disabled:opacity-30 ${
               feedbackState === 'down'
                 ? 'text-red-400 scale-110'
@@ -120,6 +122,7 @@ export default function Player() {
               value={state.currentTime}
               onChange={e => controls.seek(Number(e.target.value))}
               disabled={!currentTrack || state.loading}
+              aria-label="Playback position"
               className="w-full h-1 appearance-none bg-white/15 rounded-full cursor-pointer disabled:cursor-default"
               style={{
                 background: `linear-gradient(to right, #d4a017 ${progress}%, rgba(255,255,255,0.15) ${progress}%)`,
@@ -135,7 +138,8 @@ export default function Player() {
           <button
             onClick={controls.thumbUp}
             disabled={!currentTrack || !!feedbackState || state.loading}
-            title="Love it"
+            aria-label="Love this track"
+            aria-pressed={feedbackState === 'up'}
             className={`flex-none transition-all disabled:opacity-30 ${
               feedbackState === 'up'
                 ? 'text-[#d4a017] scale-110'
@@ -152,6 +156,7 @@ export default function Player() {
         <button
           onClick={controls.prev}
           disabled={state.loading}
+          aria-label="Previous track"
           className="p-3 text-white/50 hover:text-white transition-colors disabled:opacity-30"
         >
           <SkipBack className="w-7 h-7" />
@@ -160,7 +165,8 @@ export default function Player() {
         <button
           onClick={controls.togglePlay}
           disabled={state.loading || !!state.error}
-          className="w-18 h-18 rounded-full border-2 border-white/60 flex items-center justify-center hover:border-white active:scale-95 transition-all disabled:opacity-30"
+          aria-label={state.playing ? 'Pause' : 'Play'}
+          className="rounded-full border-2 border-white/60 flex items-center justify-center hover:border-white active:scale-95 transition-all disabled:opacity-30"
           style={{ width: '72px', height: '72px' }}
         >
           {state.playing
@@ -172,6 +178,7 @@ export default function Player() {
         <button
           onClick={controls.next}
           disabled={state.loading}
+          aria-label="Next track"
           className="p-3 text-white/50 hover:text-white transition-colors disabled:opacity-30"
         >
           <SkipForward className="w-7 h-7" />
@@ -180,7 +187,11 @@ export default function Player() {
 
       {/* Queue position */}
       {state.tracks.length > 0 && (
-        <div className="text-center pb-6 text-[10px] text-white/15">
+        <div
+          className="text-center text-[10px] text-white/15"
+          style={{ paddingBottom: 'max(24px, env(safe-area-inset-bottom, 24px))' }}
+          aria-label={`Track ${state.currentIndex + 1} of ${state.tracks.length}`}
+        >
           {state.currentIndex + 1} / {state.tracks.length}
         </div>
       )}

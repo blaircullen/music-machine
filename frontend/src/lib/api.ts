@@ -339,8 +339,8 @@ export function getStationRefreshStatus(id: number): Promise<StationRefreshStatu
   return request<StationRefreshStatus>(`/stations/${id}/status`)
 }
 
-export function searchStationTracks(q: string): Promise<SeedTrack[]> {
-  return request<SeedTrack[]>(`/stations/search/tracks?q=${encodeURIComponent(q)}&limit=20`)
+export function searchStationTracks(q: string, signal?: AbortSignal): Promise<SeedTrack[]> {
+  return request<SeedTrack[]>(`/stations/search/tracks?q=${encodeURIComponent(q)}&limit=20`, { signal })
 }
 
 // Sonic
