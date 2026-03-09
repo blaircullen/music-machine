@@ -137,6 +137,12 @@ No automated file actions — user wants to review all duplicate resolutions man
 **Stream endpoint:** `GET /api/stream/{track_id}` uses `FileResponse` with Range header support — required for Safari iOS to scrub. MIME must match format (audio/flac, audio/mpeg).
 **Player route:** `/listen/:stationId` is a top-level route in `App.tsx` (no sidebar). Uses split: `/listen/*` catches first, `/*` catches the sidebar shell with nested `<Routes>`.
 **Route ordering in FastAPI:** `GET /stations/search/tracks` MUST be defined before `GET /stations/{station_id}` or FastAPI matches "search" as the station_id.
+**Essentia base image Python version:** `ghcr.io/mtg/essentia:latest` ships Python <3.9. Do NOT use generic type annotations (`set[int]`, `tuple[X, Y]`, `list[str]`) — these require 3.9+. Use bare `set()`, plain `tuple`, etc. in `sonic-analyzer/worker.py`.
+**analysis_queue bootstrap:** Scanner only enqueues tracks added during a scan. After first deploy, existing tracks are NOT in the queue. Bootstrap with: `INSERT OR IGNORE INTO analysis_queue (track_id) SELECT id FROM tracks WHERE status='active';`
+**File-not-found loop:** If `analyze_track()` doesn't remove stale tracks from `analysis_queue`, workers tight-loop re-picking the same missing-file tracks. Always DELETE from queue on file-not-found.
+**Concurrency setting:** `sonic_concurrency` in settings table (default 2, max 8). Restart sonic-analyzer container after changing — setting is read once at startup.
+**Beast NFS mount:** `/mnt/nas/music` on Beast host. Override maps this into containers. `/mnt/music` and `/mnt/nas_music` are empty dirs — do not use.
+**docker-compose.override.yml sonic-analyzer volumes:** Must be explicitly listed in override for the sonic-analyzer service, otherwise base compose.yml bind mount paths are used (which point to wrong host paths).
 
 ## Plex Library Scan
 
