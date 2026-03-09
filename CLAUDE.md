@@ -130,6 +130,14 @@ No automated file actions — user wants to review all duplicate resolutions man
 - **Deps:** lucide-react, motion, react-hot-toast, recharts
 - **Copyright:** 2026 Shawnee Digital
 
+## Sonic Analysis Engine
+
+**Sidecar:** `sonic-analyzer/` — Essentia Docker container, polls `analysis_queue`, extracts 73-dim float32 feature vectors, stores as BLOB in `track_features`.
+**Critical schema ordering:** `_migrate_stations_to_sonic()` in `database.py` must run BEFORE `executescript(SCHEMA)` — `executescript` issues an implicit COMMIT, so DROPs must happen first.
+**Stream endpoint:** `GET /api/stream/{track_id}` uses `FileResponse` with Range header support — required for Safari iOS to scrub. MIME must match format (audio/flac, audio/mpeg).
+**Player route:** `/listen/:stationId` is a top-level route in `App.tsx` (no sidebar). Uses split: `/listen/*` catches first, `/*` catches the sidebar shell with nested `<Routes>`.
+**Route ordering in FastAPI:** `GET /stations/search/tracks` MUST be defined before `GET /stations/{station_id}` or FastAPI matches "search" as the station_id.
+
 ## Plex Library Scan
 
 After upgrades/reorg, trigger: `GET http://10.0.0.7:32400/library/sections/2/refresh?X-Plex-Token=fzVAhz-21g7CfJvA7jK8`

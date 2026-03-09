@@ -1,0 +1,15 @@
+{
+  "name": "Music Machine",
+  "short_name": "M²",
+  "start_url": "/stations",
+  "display": "standalone",
+  "background_color": "#13151f",
+  "theme_color": "#13151f",
+  "icons": [
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    }
+  ]
+}
