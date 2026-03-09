@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Library, ScrollText, ArrowUpCircle, Wand2, X, Radio } from 'lucide-react'
+import { LayoutDashboard, Library, ScrollText, ArrowUpCircle, Wand2, X, Radio, Settings, Copy, Trash2 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { getStats } from '../../lib/api'
 
@@ -14,10 +14,13 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/library', label: 'Library', icon: Library },
+  { to: '/duplicates', label: 'Duplicates', icon: Copy },
   { to: '/upgrades', label: 'Upgrades', icon: ArrowUpCircle },
   { to: '/tagger', label: 'MetaTagger', icon: Wand2 },
   { to: '/stations', label: 'Stations', icon: Radio },
+  { to: '/trash', label: 'Trash', icon: Trash2 },
   { to: '/jobs', label: 'Job Log', icon: ScrollText },
+  { to: '/settings', label: 'Settings', icon: Settings },
 ]
 
 function useMusicGrabberStatus() {

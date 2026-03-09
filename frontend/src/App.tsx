@@ -9,6 +9,9 @@ const JobLog = lazy(() => import('./pages/JobLog'))
 const Upgrades = lazy(() => import('./pages/Upgrades'))
 const Tagger = lazy(() => import('./pages/Tagger'))
 const Stations = lazy(() => import('./pages/Stations'))
+const Settings = lazy(() => import('./pages/Settings'))
+const Duplicates = lazy(() => import('./pages/Duplicates'))
+const Trash = lazy(() => import('./pages/Trash'))
 
 function PageFallback() {
   return (
@@ -49,6 +52,9 @@ export default function App() {
               <Route path="/upgrades" element={<Upgrades />} />
               <Route path="/tagger" element={<Tagger />} />
               <Route path="/stations" element={<Stations />} />
+              <Route path="/settings" element={<Settings />} />
+              <Route path="/duplicates" element={<Duplicates />} />
+              <Route path="/trash" element={<Trash />} />
             </Routes>
           </Suspense>
         </main>
