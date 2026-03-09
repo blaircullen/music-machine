@@ -146,7 +146,7 @@ export default function Settings() {
             type="range"
             min="0"
             max="1.0"
-            step="0.05"
+            step="0.01"
             value={autoResolve}
             onChange={(e) => setAutoResolve(e.target.value)}
             className="w-full h-2 bg-base-700 rounded-full appearance-none cursor-pointer"

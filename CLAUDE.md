@@ -103,6 +103,7 @@ No automated file actions — user wants to review all duplicate resolutions man
 - **Frontend uses polling** (2s) not WebSocket — `_broadcast_sync` can't push from threadpool to async loop
 - **SPA routing:** Starlette `StaticFiles(html=True)` doesn't handle client routes. Fix: mount `/assets` with StaticFiles, catch-all `@app.get("/{full_path:path}")` returns `FileResponse(index.html)`
 - **UX rule:** Every user action must show immediate feedback. Never use Button auto-state for long-running ops — use local `*Requested` flags that bridge the gap before backend confirms via polling
+- **Adding a new page:** Requires BOTH (1) lazy import + `<Route>` in `App.tsx` AND (2) entry in `NAV_ITEMS` in `Sidebar.tsx`. Pages are not auto-discovered. When adding a page, also audit `pages/` for any other files missing from the nav.
 
 ## MusicGrabber Integration
 
