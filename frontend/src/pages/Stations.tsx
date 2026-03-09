@@ -87,10 +87,8 @@ function CreateStationModal({ open, onClose, onCreated }: CreateModalProps) {
     }
   }
 
-  if (!open) return null
-
   return (
-    <Modal title="New Station" onClose={handleClose}>
+    <Modal open={open} title="New Station" onClose={handleClose}>
       <div className="space-y-5 p-1">
         {/* Name */}
         <div>
@@ -288,10 +286,10 @@ function StationCard({ station, onDelete, onRefreshed }: StationCardProps) {
 
           <div className="flex flex-wrap gap-1.5 mb-3">
             {station.bpm_min != null && station.bpm_max != null && (
-              <Badge variant="info">{station.bpm_min}–{station.bpm_max} BPM</Badge>
+              <Badge variant="blue">{station.bpm_min}–{station.bpm_max} BPM</Badge>
             )}
             {station.decade_min != null && (
-              <Badge variant="info">{String(station.decade_min).slice(2)}s</Badge>
+              <Badge variant="blue">{String(station.decade_min).slice(2)}s</Badge>
             )}
           </div>
 
