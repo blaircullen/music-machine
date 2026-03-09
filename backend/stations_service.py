@@ -209,6 +209,7 @@ def refresh_station(station: dict) -> dict:
     with _status_lock:
         _refresh_status[station_id] = {"running": True, "error": None}
 
+    result = {"ok": False, "track_count": 0, "error": None}
     try:
         api_key = _get_lastfm_key()
         if not api_key:
@@ -223,7 +224,7 @@ def refresh_station(station: dict) -> dict:
 
         # Step 1: Expand seeds via Last.fm
         logger.info(f"[{name}] Fetching similar artists for {len(seed_artists)} seeds")
-        aggregated: dict[str, dict] = {}  # name -> {match, listeners}
+        aggregated: dict[str, dict] = {}
         for seed in seed_artists:
             similar = get_similar_artists(seed, api_key=api_key, limit=_MAX_SIMILAR_PER_SEED)
             for item in similar:
@@ -237,10 +238,9 @@ def refresh_station(station: dict) -> dict:
             {"name": n, "match": v["match"], "listeners": v["listeners"]}
             for n, v in sorted(aggregated.items(), key=lambda x: -x[1]["match"])
         ]
-
         logger.info(f"[{name}] {len(similar_list)} unique similar artists found")
 
-        # Step 2: Cross-reference with Plex (cap to top N by match score)
+        # Step 2: Cross-reference with Plex
         plex_tracks: dict[str, list] = {}
         candidates_artists = [
             a for a in similar_list
@@ -279,16 +279,19 @@ def refresh_station(station: dict) -> dict:
         _save_history(station_id, selected_keys)
         _update_station(station_id, len(selected_keys))
 
-        with _status_lock:
-            _refresh_status[station_id] = {"running": False, "error": None}
-
-        return {"ok": True, "track_count": len(selected_keys)}
+        result = {"ok": True, "track_count": len(selected_keys)}
 
     except Exception as e:
         logger.error(f"[{name}] Refresh failed: {e}")
+        result = {"ok": False, "track_count": 0, "error": str(e)}
         with _status_lock:
-            _refresh_status[station_id] = {"running": False, "error": str(e)}
-        return {"ok": False, "track_count": 0, "error": str(e)}
+            _refresh_status[station_id]["error"] = str(e)
+
+    finally:
+        with _status_lock:
+            _refresh_status[station_id]["running"] = False
+
+    return result
 
 
 def refresh_all_stations():
