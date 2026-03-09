@@ -158,7 +158,14 @@ def analyze_track(track_id: int, file_path: str) -> bool:
     """
     path = Path(file_path)
     if not path.exists():
-        logger.warning(f"Track {track_id}: file not found: {file_path}")
+        logger.warning(f"Track {track_id}: file not found, removing from queue: {file_path}")
+        try:
+            conn = get_db()
+            conn.execute("DELETE FROM analysis_queue WHERE track_id = ?", (track_id,))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
         return False
 
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
