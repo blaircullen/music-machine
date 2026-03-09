@@ -10,6 +10,12 @@ def init_db():
     with get_db() as db:
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=NORMAL")
+
+        # Migrations that DROP tables must run before executescript so CREATE IF NOT EXISTS
+        # sees no existing table and creates the new schema.
+        # executescript() issues an implicit COMMIT, which applies the DROPs first.
+        _migrate_stations_to_sonic(db)
+
         db.executescript("""
             CREATE TABLE IF NOT EXISTS tracks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,13 +128,8 @@ def init_db():
             CREATE TABLE IF NOT EXISTS stations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
-                seed_artists TEXT NOT NULL DEFAULT '[]',
-                bpm_min INTEGER,
-                bpm_max INTEGER,
-                decade_min INTEGER,
-                decade_max INTEGER,
+                seed_track_ids TEXT NOT NULL DEFAULT '[]',
                 plex_playlist_name TEXT NOT NULL,
-                lastfm_min_listeners INTEGER NOT NULL DEFAULT 500000,
                 track_count INTEGER NOT NULL DEFAULT 0,
                 last_refreshed TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -137,14 +138,70 @@ def init_db():
             CREATE TABLE IF NOT EXISTS station_track_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 station_id INTEGER NOT NULL REFERENCES stations(id) ON DELETE CASCADE,
-                rating_key TEXT NOT NULL,
+                track_id INTEGER NOT NULL,
                 generated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS track_features (
+                track_id         INTEGER PRIMARY KEY REFERENCES tracks(id),
+                bpm              REAL,
+                key              TEXT,
+                energy           REAL,
+                danceability     REAL,
+                valence          REAL,
+                acousticness     REAL,
+                instrumentalness REAL,
+                voice_gender     TEXT,
+                mood_happy       REAL,
+                mood_sad         REAL,
+                mood_aggressive  REAL,
+                mood_relaxed     REAL,
+                genre_electronic REAL,
+                genre_rock       REAL,
+                genre_pop        REAL,
+                genre_hiphop     REAL,
+                genre_jazz       REAL,
+                feature_vector   BLOB,
+                analyzed_at      TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS analysis_queue (
+                track_id  INTEGER PRIMARY KEY,
+                queued_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS station_preferences (
+                station_id        INTEGER PRIMARY KEY REFERENCES stations(id) ON DELETE CASCADE,
+                preference_vector BLOB,
+                updated_at        TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS station_blacklist (
+                station_id INTEGER NOT NULL,
+                track_id   INTEGER NOT NULL,
+                expires_at TEXT,
+                PRIMARY KEY (station_id, track_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS station_feedback (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                station_id INTEGER NOT NULL,
+                track_id   INTEGER NOT NULL,
+                signal     TEXT NOT NULL,
+                source     TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
             CREATE INDEX IF NOT EXISTS idx_station_track_history_station_id
                 ON station_track_history(station_id);
             CREATE INDEX IF NOT EXISTS idx_station_track_history_generated_at
                 ON station_track_history(generated_at);
+            CREATE INDEX IF NOT EXISTS idx_track_features_analyzed_at
+                ON track_features(analyzed_at);
+            CREATE INDEX IF NOT EXISTS idx_analysis_queue_queued_at
+                ON analysis_queue(queued_at);
+            CREATE INDEX IF NOT EXISTS idx_station_feedback_station_id
+                ON station_feedback(station_id);
         """)
 
         # Insert default settings if not present
@@ -154,6 +211,7 @@ def init_db():
             ("upgrade_concurrency", "2"),
             ("upgrade_include_flac_hires", "true"),
             ("lastfm_api_key", ""),
+            ("sonic_concurrency", "2"),
         ]
         for key, value in defaults:
             db.execute(
@@ -163,6 +221,19 @@ def init_db():
 
         # Migrate upgrade_queue from slskd columns to MusicGrabber columns
         _migrate_upgrade_queue(db)
+
+
+def _migrate_stations_to_sonic(db):
+    """
+    Drop old Last.fm-based stations schema and recreate with sonic engine schema.
+    Detects old schema by presence of 'seed_artists' column on the stations table.
+    """
+    cursor = db.execute("PRAGMA table_info(stations)")
+    cols = {row[1] for row in cursor.fetchall()}
+    if "seed_artists" in cols:
+        # Old schema present — drop all station-related tables so executescript recreates them
+        db.execute("DROP TABLE IF EXISTS station_track_history")
+        db.execute("DROP TABLE IF EXISTS stations")
 
 
 def _migrate_upgrade_queue(db):

@@ -1,20 +1,21 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Radio, Plus, RefreshCw, Trash2, Check, X } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Radio, Plus, RefreshCw, Trash2, Check, X, Headphones, Music2 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { useNavigate } from 'react-router-dom'
 import { GlassCard } from '../components/ui/GlassCard'
 import { Button } from '../components/ui/Button'
-import { Badge } from '../components/ui/Badge'
 import { Modal } from '../components/ui/Modal'
 import { EmptyState } from '../components/ui/EmptyState'
 import {
   getStations, createStation, deleteStation,
-  refreshStation, getStationRefreshStatus,
-  type Station, type StationCreate,
+  refreshStation, getStationRefreshStatus, searchStationTracks,
+  getAnalysisStats,
+  type Station, type StationCreate, type SeedTrack, type AnalysisStats,
 } from '../lib/api'
 import toast from 'react-hot-toast'
 
 // ------------------------------------------------------------------
-// Equalizer bars — ambient music indicator, livens up while refreshing
+// Equalizer bars
 // ------------------------------------------------------------------
 
 function EqualizerBars({ active }: { active: boolean }) {
@@ -46,33 +47,139 @@ function EqualizerBars({ active }: { active: boolean }) {
 }
 
 // ------------------------------------------------------------------
-// Refresh flavor text — cycles through contextual messages during the wait
+// Refresh flavor text (sonic edition)
 // ------------------------------------------------------------------
 
-function getRefreshMessages(seedArtists: string[]): string[] {
-  const first = seedArtists[0] ?? 'your artists'
-  const second = seedArtists[1]
-  return [
-    `Asking Last.fm what sounds like ${first}…`,
-    second ? `Expanding the ${second} universe…` : 'Mapping the similarity graph…',
-    'Cross-referencing your Plex library…',
-    'Applying recency weights…',
-    'Drawing the final sample…',
-    'Syncing playlist to Plex…',
-  ]
-}
+const REFRESH_MSGS = [
+  'Computing seed centroid…',
+  'Scanning feature matrix…',
+  'Running cosine similarity…',
+  'Applying preference weights…',
+  'Drawing weighted sample…',
+  'Syncing playlist to Plex…',
+]
 
-function useRefreshMessages(active: boolean, seedArtists: string[]) {
+function useRefreshMessages(active: boolean) {
   const [idx, setIdx] = useState(0)
-  const msgs = getRefreshMessages(seedArtists)
-
   useEffect(() => {
     if (!active) { setIdx(0); return }
-    const id = setInterval(() => setIdx(i => (i + 1) % msgs.length), 2600)
+    const id = setInterval(() => setIdx(i => (i + 1) % REFRESH_MSGS.length), 2600)
     return () => clearInterval(id)
-  }, [active, msgs.length])
+  }, [active])
+  return active ? REFRESH_MSGS[idx] : null
+}
 
-  return active ? msgs[idx] : null
+// ------------------------------------------------------------------
+// Track search autocomplete
+// ------------------------------------------------------------------
+
+function formatDuration(secs: number | null): string {
+  if (!secs) return ''
+  const m = Math.floor(secs / 60)
+  const s = Math.floor(secs % 60)
+  return `${m}:${s.toString().padStart(2, '0')}`
+}
+
+interface TrackSearchProps {
+  onSelect: (track: SeedTrack) => void
+  disabled?: boolean
+}
+
+function TrackSearch({ onSelect, disabled }: TrackSearchProps) {
+  const [q, setQ] = useState('')
+  const [results, setResults] = useState<SeedTrack[]>([])
+  const [loading, setLoading] = useState(false)
+  const [open, setOpen] = useState(false)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const wrapperRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    if (q.length < 2) { setResults([]); setOpen(false); return }
+    debounceRef.current = setTimeout(async () => {
+      setLoading(true)
+      try {
+        const res = await searchStationTracks(q)
+        setResults(res)
+        setOpen(res.length > 0)
+      } catch {
+        setResults([])
+      } finally {
+        setLoading(false)
+      }
+    }, 300)
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
+  }, [q])
+
+  // Close on outside click
+  useEffect(() => {
+    function handle(e: MouseEvent) {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handle)
+    return () => document.removeEventListener('mousedown', handle)
+  }, [])
+
+  function select(track: SeedTrack) {
+    onSelect(track)
+    setQ('')
+    setResults([])
+    setOpen(false)
+  }
+
+  return (
+    <div ref={wrapperRef} className="relative">
+      <div className="flex items-center gap-2 bg-[#1a1d27] border border-[#2a2d3a] rounded-lg px-3 py-2 focus-within:border-[#d4a017]/50">
+        <Music2 className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+        <input
+          type="text"
+          value={q}
+          onChange={e => setQ(e.target.value)}
+          onFocus={() => results.length > 0 && setOpen(true)}
+          placeholder="Search artist, title, or album…"
+          disabled={disabled}
+          className="flex-1 bg-transparent text-sm text-white placeholder-slate-600 focus:outline-none disabled:opacity-40"
+        />
+        {loading && (
+          <div className="w-3.5 h-3.5 border border-[#d4a017] border-t-transparent rounded-full animate-spin shrink-0" />
+        )}
+      </div>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.15 }}
+            className="absolute z-50 w-full mt-1 bg-[#1e2130] border border-[#2a2d3a] rounded-lg shadow-xl overflow-hidden max-h-64 overflow-y-auto"
+          >
+            {results.map(track => (
+              <button
+                key={track.id}
+                onClick={() => select(track)}
+                className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-[#2a2d3a] transition-colors text-left"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm text-white truncate">{track.title}</div>
+                  <div className="text-[11px] text-slate-400 truncate">
+                    {track.artist}{track.album ? ` · ${track.album}` : ''}
+                  </div>
+                </div>
+                {track.duration && (
+                  <span className="text-[11px] text-slate-500 shrink-0">
+                    {formatDuration(track.duration)}
+                  </span>
+                )}
+              </button>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  )
 }
 
 // ------------------------------------------------------------------
@@ -87,54 +194,35 @@ interface CreateModalProps {
 
 function CreateStationModal({ open, onClose, onCreated }: CreateModalProps) {
   const [name, setName] = useState('')
-  const [artistInput, setArtistInput] = useState('')
-  const [seedArtists, setSeedArtists] = useState<string[]>([])
-  const [bpmEnabled, setBpmEnabled] = useState(false)
-  const [bpmMin, setBpmMin] = useState(120)
-  const [bpmMax, setBpmMax] = useState(180)
-  const [decadeEnabled, setDecadeEnabled] = useState(false)
-  const [decade, setDecade] = useState('90s')
+  const [seedTracks, setSeedTracks] = useState<SeedTrack[]>([])
   const [saving, setSaving] = useState(false)
 
-  const DECADE_RANGES: Record<string, [number, number]> = {
-    '70s': [1970, 1979], '80s': [1980, 1989], '90s': [1990, 1999],
-    '00s': [2000, 2009], '10s': [2010, 2019], '20s': [2020, 2029],
-  }
-
   function reset() {
-    setName(''); setArtistInput(''); setSeedArtists([])
-    setBpmEnabled(false); setBpmMin(120); setBpmMax(180)
-    setDecadeEnabled(false); setDecade('90s'); setSaving(false)
+    setName('')
+    setSeedTracks([])
+    setSaving(false)
   }
 
   function handleClose() { reset(); onClose() }
 
-  function addArtist() {
-    const trimmed = artistInput.trim()
-    if (trimmed && !seedArtists.includes(trimmed)) {
-      setSeedArtists(prev => [...prev, trimmed])
+  function addTrack(track: SeedTrack) {
+    if (!seedTracks.some(t => t.id === track.id)) {
+      setSeedTracks(prev => [...prev, track])
     }
-    setArtistInput('')
   }
 
-  function removeArtist(artist: string) {
-    setSeedArtists(prev => prev.filter(a => a !== artist))
+  function removeTrack(id: number) {
+    setSeedTracks(prev => prev.filter(t => t.id !== id))
   }
 
   async function handleSave() {
     if (!name.trim()) { toast.error('Station name required'); return }
-    if (seedArtists.length === 0) { toast.error('Add at least one seed artist'); return }
+    if (seedTracks.length === 0) { toast.error('Add at least one seed track'); return }
+    if (seedTracks.length > 5) { toast.error('Maximum 5 seed tracks'); return }
 
     const data: StationCreate = {
       name: name.trim(),
-      seed_artists: seedArtists,
-      bpm_min: bpmEnabled ? bpmMin : null,
-      bpm_max: bpmEnabled ? bpmMax : null,
-    }
-    if (decadeEnabled) {
-      const [dMin, dMax] = DECADE_RANGES[decade]
-      data.decade_min = dMin
-      data.decade_max = dMax
+      seed_track_ids: seedTracks.map(t => t.id),
     }
 
     setSaving(true)
@@ -165,89 +253,37 @@ function CreateStationModal({ open, onClose, onCreated }: CreateModalProps) {
           />
         </div>
 
-        {/* Seed Artists */}
+        {/* Seed Tracks */}
         <div>
-          <label className="text-xs text-slate-400 mb-1 block">Seed Artists</label>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={artistInput}
-              onChange={e => setArtistInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addArtist() } }}
-              placeholder="Artist name — press Enter to add"
-              className="flex-1 bg-[#1a1d27] border border-[#2a2d3a] rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#d4a017]/50"
-            />
-            <Button variant="secondary" onClick={addArtist}>Add</Button>
-          </div>
-          {seedArtists.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mt-2">
-              {seedArtists.map(a => (
-                <span key={a} className="flex items-center gap-1 bg-[#d4a017]/15 text-[#f0c95c] text-xs px-2 py-1 rounded-full">
-                  {a}
-                  <button onClick={() => removeArtist(a)} className="hover:text-white transition-colors">
-                    <X className="w-3 h-3" />
+          <label className="text-xs text-slate-400 mb-1 block">
+            Seed Tracks <span className="text-slate-600">(3–5 tracks that define the vibe)</span>
+          </label>
+          <TrackSearch onSelect={addTrack} disabled={seedTracks.length >= 5} />
+          {seedTracks.length > 0 && (
+            <div className="mt-2 space-y-1.5">
+              {seedTracks.map(track => (
+                <div
+                  key={track.id}
+                  className="flex items-center gap-2 bg-[#d4a017]/10 rounded-lg px-3 py-2"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm text-[#f0c95c] truncate">{track.title}</div>
+                    <div className="text-[11px] text-slate-400 truncate">{track.artist}</div>
+                  </div>
+                  <button
+                    onClick={() => removeTrack(track.id)}
+                    className="text-slate-500 hover:text-white transition-colors shrink-0"
+                  >
+                    <X className="w-3.5 h-3.5" />
                   </button>
-                </span>
+                </div>
               ))}
             </div>
           )}
-        </div>
-
-        {/* BPM Range */}
-        <div>
-          <label className="flex items-center gap-2 text-xs text-slate-400 mb-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={bpmEnabled}
-              onChange={e => setBpmEnabled(e.target.checked)}
-              className="accent-[#d4a017]"
-            />
-            BPM Range (workout energy control)
-          </label>
-          {bpmEnabled && (
-            <div className="flex items-center gap-3 pl-5">
-              <div>
-                <label className="text-[10px] text-slate-500 block mb-1">Min BPM</label>
-                <input
-                  type="number" min={60} max={220} value={bpmMin}
-                  onChange={e => setBpmMin(Number(e.target.value))}
-                  className="w-20 bg-[#1a1d27] border border-[#2a2d3a] rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-[#d4a017]/50"
-                />
-              </div>
-              <span className="text-slate-500 mt-4">–</span>
-              <div>
-                <label className="text-[10px] text-slate-500 block mb-1">Max BPM</label>
-                <input
-                  type="number" min={60} max={220} value={bpmMax}
-                  onChange={e => setBpmMax(Number(e.target.value))}
-                  className="w-20 bg-[#1a1d27] border border-[#2a2d3a] rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-[#d4a017]/50"
-                />
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Decade Filter */}
-        <div>
-          <label className="flex items-center gap-2 text-xs text-slate-400 mb-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={decadeEnabled}
-              onChange={e => setDecadeEnabled(e.target.checked)}
-              className="accent-[#d4a017]"
-            />
-            Decade Filter
-          </label>
-          {decadeEnabled && (
-            <select
-              value={decade}
-              onChange={e => setDecade(e.target.value)}
-              className="ml-5 bg-[#1a1d27] border border-[#2a2d3a] rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-[#d4a017]/50"
-            >
-              {Object.keys(DECADE_RANGES).map(d => (
-                <option key={d} value={d}>{d}</option>
-              ))}
-            </select>
+          {seedTracks.length === 0 && (
+            <p className="text-[11px] text-slate-600 mt-1.5">
+              Search for tracks from your library above. The station will find similar-sounding music using acoustic similarity.
+            </p>
           )}
         </div>
 
@@ -275,10 +311,11 @@ interface StationCardProps {
 }
 
 function StationCard({ station, index, onDelete, onRefreshed }: StationCardProps) {
+  const navigate = useNavigate()
   const [refreshing, setRefreshing] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [justRefreshed, setJustRefreshed] = useState(false)
-  const refreshMsg = useRefreshMessages(refreshing, station.seed_artists)
+  const refreshMsg = useRefreshMessages(refreshing)
 
   async function handleRefresh() {
     setRefreshing(true)
@@ -337,37 +374,16 @@ function StationCard({ station, index, onDelete, onRefreshed }: StationCardProps
     <motion.div
       initial={{ opacity: 0, y: 14 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{
-        duration: 0.35,
-        delay: index * 0.07,
-        ease: [0.25, 1, 0.5, 1],
-      }}
+      transition={{ duration: 0.35, delay: index * 0.07, ease: [0.25, 1, 0.5, 1] }}
     >
       <GlassCard className={`p-5 transition-all duration-500 ${justRefreshed ? 'ring-1 ring-[#d4a017]/40' : ''}`}>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 mb-2">
+            <div className="flex items-center gap-2 mb-3">
               <EqualizerBars active={refreshing} />
               <h3 className="text-white font-semibold text-sm truncate font-[family-name:var(--font-family-display)]">
                 {station.name}
               </h3>
-            </div>
-
-            <div className="flex flex-wrap gap-1 mb-3">
-              {station.seed_artists.map(a => (
-                <span key={a} className="text-[10px] bg-[#d4a017]/10 text-[#f0c95c] px-2 py-0.5 rounded-full">
-                  {a}
-                </span>
-              ))}
-            </div>
-
-            <div className="flex flex-wrap gap-1.5 mb-3">
-              {station.bpm_min != null && station.bpm_max != null && (
-                <Badge variant="blue">{station.bpm_min}–{station.bpm_max} BPM</Badge>
-              )}
-              {station.decade_min != null && (
-                <Badge variant="blue">{String(station.decade_min).slice(2)}s</Badge>
-              )}
             </div>
 
             <div className="text-[10px] text-slate-500 space-y-0.5 min-h-[2.5rem]">
@@ -403,6 +419,16 @@ function StationCard({ station, index, onDelete, onRefreshed }: StationCardProps
           </div>
 
           <div className="flex flex-col gap-1.5 shrink-0">
+            {/* Listen button */}
+            {station.track_count > 0 && (
+              <button
+                onClick={() => navigate(`/listen/${station.id}`)}
+                title="Open player"
+                className="p-1.5 text-slate-500 hover:text-[#d4a017] transition-colors"
+              >
+                <Headphones className="w-4 h-4" />
+              </button>
+            )}
             <button
               onClick={handleRefresh}
               disabled={refreshing}
@@ -443,10 +469,16 @@ export default function Stations() {
   const [stations, setStations] = useState<Station[]>([])
   const [loading, setLoading] = useState(true)
   const [createOpen, setCreateOpen] = useState(false)
+  const [stats, setStats] = useState<AnalysisStats | null>(null)
 
   const load = useCallback(async () => {
     try {
-      setStations(await getStations())
+      const [stationsData, statsData] = await Promise.all([
+        getStations(),
+        getAnalysisStats().catch(() => null),
+      ])
+      setStations(stationsData)
+      setStats(statsData)
     } catch {
       toast.error('Failed to load stations')
     } finally {
@@ -470,14 +502,28 @@ export default function Stations() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-white font-[family-name:var(--font-family-display)]">
             Stations
           </h1>
           <p className="text-sm text-slate-400 mt-0.5">
-            Pandora-style daily playlists from your library · refreshes at 6 AM
+            Sonic similarity playlists seeded by tracks · refreshes at 6 AM
           </p>
+          {stats && (
+            <div className="mt-2 flex items-center gap-2">
+              <div className="h-1.5 w-48 bg-[#1a1d27] rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-[#d4a017]/70 rounded-full transition-all duration-700"
+                  style={{ width: `${stats.coverage_pct}%` }}
+                />
+              </div>
+              <span className="text-[11px] text-slate-500">
+                {stats.analyzed_count.toLocaleString()} / {stats.total_tracks.toLocaleString()} analyzed
+                {stats.queued_count > 0 && ` · ${stats.queued_count} queued`}
+              </span>
+            </div>
+          )}
         </div>
         <Button onClick={() => setCreateOpen(true)}>
           <Plus className="w-4 h-4 mr-1.5" />
@@ -488,14 +534,14 @@ export default function Stations() {
       {loading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {[1, 2, 3].map(i => (
-            <div key={i} className="h-40 bg-[#1a1d27] rounded-xl animate-pulse" />
+            <div key={i} className="h-36 bg-[#1a1d27] rounded-xl animate-pulse" />
           ))}
         </div>
       ) : stations.length === 0 ? (
         <EmptyState
           icon={Radio}
           title="No stations yet"
-          description="Seed a station with a few artists you love. Music Machine will map their sonic neighborhood on Last.fm, cross-reference your library, and generate a fresh playlist every morning — ready for your next ride."
+          description="Seed a station with 3–5 tracks that define the vibe. Music Machine will find similar-sounding music in your library using acoustic fingerprinting and generate a fresh playlist every morning."
           action={
             <Button onClick={() => setCreateOpen(true)}>
               <Plus className="w-4 h-4 mr-1.5" />

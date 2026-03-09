@@ -509,14 +509,19 @@ def _run_download_worker():
                         )
 
                 with get_db() as db:
-                    # Mark original as upgraded
+                    # Mark original as upgraded; clear its sonic features so the
+                    # new file gets freshly analyzed
                     db.execute(
                         "UPDATE tracks SET status = 'upgraded' WHERE id = ?",
                         (item_dict["track_id"],),
                     )
+                    db.execute(
+                        "DELETE FROM track_features WHERE track_id = ?",
+                        (item_dict["track_id"],),
+                    )
 
                     # Insert new FLAC track
-                    db.execute(
+                    new_track_cur = db.execute(
                         """INSERT INTO tracks
                            (file_path, file_size, format, bitrate, bit_depth, sample_rate,
                             duration, artist, album_artist, album, title, track_number,
@@ -536,6 +541,11 @@ def _run_download_worker():
                             new_meta.get("track_number") or item_dict.get("track_number"),
                             new_meta.get("disc_number") or item_dict.get("disc_number"),
                         ),
+                    )
+                    # Enqueue upgraded FLAC for sonic analysis
+                    db.execute(
+                        "INSERT OR IGNORE INTO analysis_queue (track_id) VALUES (?)",
+                        (new_track_cur.lastrowid,),
                     )
 
                     # Mark queue item complete

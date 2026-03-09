@@ -24,7 +24,7 @@ ssh vm101 "cd /home/sunygxc/projects/music-machine && docker compose build --no-
 
 Note: `ssh-add --apple-load-keychain` must run in the same shell session before SSH commands.
 
-### Fast Deploy (frontend-only)
+### Fast Deploy (frontend-only, to Beast directly)
 
 There is NO volume mount for `frontend/dist/` — it is baked into the Docker image.
 A full rebuild is always required for frontend changes. Use:
@@ -95,6 +95,7 @@ No automated file actions — user wants to review all duplicate resolutions man
 
 ## Key Patterns
 
+- **`/api/dupes/` response shape:** Flat `{id, confidence, match_type, resolved: bool, tracks: []}` — NOT `{group, members}`. Each track includes `quality_score` and `is_winner` computed by backend. Frontend must not recompute winner from scratch.
 - **Quality scoring:** lossless +10000 base, bit_depth × 100, sample_rate ÷ 100, bitrate
 - **Dedup:** groups by (normalized_artist, normalized_title, normalized_album)
 - **Scan phases:** counting → scanning → cleaning → analyzing → complete (upgrade search is separate)

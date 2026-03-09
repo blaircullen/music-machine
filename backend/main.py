@@ -50,7 +50,7 @@ def _scheduled_scan_loop():
 
 
 def _scheduled_playlist_sync_loop():
-    """Sync M3U playlists to Plex daily at 2 AM."""
+    """Sync M3U playlists to Plex daily at 2 AM, then run Plex feedback poll."""
     from routes.playlists import _run_sync
 
     while True:
@@ -71,10 +71,17 @@ def _scheduled_playlist_sync_loop():
         except Exception as e:
             logger.error(f"Scheduled playlist sync failed: {e}")
 
+        logger.info("Starting nightly Plex feedback poll")
+        try:
+            from feedback_service import run_nightly_plex_feedback
+            run_nightly_plex_feedback()
+        except Exception as e:
+            logger.error(f"Plex feedback poll failed: {e}")
+
 
 def _scheduled_station_refresh_loop():
-    """Refresh all Pandora stations daily at 6 AM."""
-    from stations_service import refresh_all_stations
+    """Refresh all sonic stations daily at 6 AM."""
+    from sonic_service import refresh_all_stations
 
     while True:
         now = datetime.now()
@@ -160,7 +167,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="music-machine", version="2.0.0", lifespan=lifespan)
 
 # Import and register all routers
-from routes import scan, dupes, upgrades, trash, stats, jobs, settings, reorg, playlists, tagger, stations
+from routes import scan, dupes, upgrades, trash, stats, jobs, settings, reorg, playlists, tagger, stations, sonic
 
 app.include_router(scan.router)
 app.include_router(dupes.router)
@@ -173,6 +180,7 @@ app.include_router(reorg.router)
 app.include_router(playlists.router)
 app.include_router(tagger.router)
 app.include_router(stations.router)
+app.include_router(sonic.router)
 
 
 @app.websocket("/ws")

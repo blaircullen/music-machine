@@ -125,7 +125,7 @@ def run_scan(music_path: Path):
                     continue
 
                 # Insert new track
-                db.execute(
+                cur = db.execute(
                     """INSERT INTO tracks
                        (file_path, file_size, format, bitrate, bit_depth, sample_rate,
                         duration, artist, album_artist, album, title, track_number,
@@ -149,6 +149,11 @@ def run_scan(music_path: Path):
                         None,  # fingerprint — done in next phase
                         None,  # sha256 — optional
                     ),
+                )
+                # Enqueue new track for sonic analysis
+                db.execute(
+                    "INSERT OR IGNORE INTO analysis_queue (track_id) VALUES (?)",
+                    (cur.lastrowid,),
                 )
 
         # Mark deleted files

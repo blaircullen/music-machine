@@ -134,13 +134,8 @@ export interface TaggerResult {
 export interface Station {
   id: number
   name: string
-  seed_artists: string[]
-  bpm_min: number | null
-  bpm_max: number | null
-  decade_min: number | null
-  decade_max: number | null
+  seed_track_ids: number[]
   plex_playlist_name: string
-  lastfm_min_listeners: number
   track_count: number
   last_refreshed: string | null
   created_at: string
@@ -148,18 +143,46 @@ export interface Station {
 
 export interface StationCreate {
   name: string
-  seed_artists: string[]
-  bpm_min?: number | null
-  bpm_max?: number | null
-  decade_min?: number | null
-  decade_max?: number | null
+  seed_track_ids: number[]
   plex_playlist_name?: string
-  lastfm_min_listeners?: number
 }
 
 export interface StationRefreshStatus {
   running: boolean
   error: string | null
+}
+
+export interface SeedTrack {
+  id: number
+  artist: string
+  title: string
+  album: string
+  duration: number | null
+}
+
+export interface QueueTrack {
+  track_id: number
+  artist: string
+  album_artist: string | null
+  album: string
+  title: string
+  duration: number | null
+  format: string
+  stream_url: string
+  artwork_url: string
+}
+
+export interface StationQueue {
+  station_id: number
+  tracks: QueueTrack[]
+  generated_at: string | null
+}
+
+export interface AnalysisStats {
+  total_tracks: number
+  analyzed_count: number
+  queued_count: number
+  coverage_pct: number
 }
 
 const BASE = '/api'
@@ -314,4 +337,28 @@ export function refreshStation(id: number): Promise<{ ok: boolean; error?: strin
 
 export function getStationRefreshStatus(id: number): Promise<StationRefreshStatus> {
   return request<StationRefreshStatus>(`/stations/${id}/status`)
+}
+
+export function searchStationTracks(q: string): Promise<SeedTrack[]> {
+  return request<SeedTrack[]>(`/stations/search/tracks?q=${encodeURIComponent(q)}&limit=20`)
+}
+
+// Sonic
+export function getAnalysisStats(): Promise<AnalysisStats> {
+  return request<AnalysisStats>('/sonic/stats')
+}
+
+export function getStationQueue(stationId: number): Promise<StationQueue> {
+  return request<StationQueue>(`/sonic/queue/${stationId}`)
+}
+
+export function postStationFeedback(
+  stationId: number,
+  trackId: number,
+  signal: 'up' | 'down',
+): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/sonic/feedback/${stationId}`, {
+    method: 'POST',
+    body: JSON.stringify({ track_id: trackId, signal }),
+  })
 }

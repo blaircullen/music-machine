@@ -17,3 +17,22 @@ services:
       - DB_PATH=/data/music-machine.db
       - MUSICGRABBER_URL=http://10.0.0.75:38274
     restart: unless-stopped
+
+  sonic-analyzer:
+    build:
+      context: ./sonic-analyzer
+    container_name: sonic-analyzer
+    volumes:
+      - ./data:/data
+      - /mnt/music:/music:ro
+      - essentia-models:/models
+    environment:
+      - DB_PATH=/data/music-machine.db
+      - MUSIC_PATH=/music
+      - MODELS_DIR=/models
+    restart: unless-stopped
+    depends_on:
+      - music-machine
+
+volumes:
+  essentia-models:
