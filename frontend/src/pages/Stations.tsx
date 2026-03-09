@@ -111,15 +111,20 @@ function TrackSearch({ onSelect, disabled }: TrackSearchProps) {
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
   }, [q])
 
-  // Close on outside click
+  // Close on outside click/touch
   useEffect(() => {
-    function handle(e: MouseEvent) {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+    function handle(e: MouseEvent | TouchEvent) {
+      const target = 'touches' in e ? e.touches[0]?.target : (e as MouseEvent).target
+      if (wrapperRef.current && target && !wrapperRef.current.contains(target as Node)) {
         setOpen(false)
       }
     }
-    document.addEventListener('mousedown', handle)
-    return () => document.removeEventListener('mousedown', handle)
+    document.addEventListener('mousedown', handle as EventListener)
+    document.addEventListener('touchstart', handle as EventListener, { passive: true })
+    return () => {
+      document.removeEventListener('mousedown', handle as EventListener)
+      document.removeEventListener('touchstart', handle as EventListener)
+    }
   }, [])
 
   function select(track: SeedTrack) {
@@ -148,17 +153,22 @@ function TrackSearch({ onSelect, disabled }: TrackSearchProps) {
       </div>
 
       <AnimatePresence>
-        {open && (
+        {(open || (q.length >= 2 && !loading && results.length === 0)) && (
           <motion.div
-            initial={{ opacity: 0, y: -4 }}
+            initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
+            exit={{ opacity: 0, y: 4 }}
             transition={{ duration: 0.15 }}
-            className="absolute z-50 w-full mt-1 bg-[#1e2130] border border-[#2a2d3a] rounded-lg shadow-xl overflow-hidden max-h-64 overflow-y-auto"
+            className="absolute z-50 w-full bottom-full mb-1 bg-[#1e2130] border border-[#2a2d3a] rounded-lg shadow-xl overflow-hidden max-h-64 overflow-y-auto"
           >
-            {results.map(track => (
+            {results.length === 0 ? (
+              <div className="px-3 py-3 text-[11px] text-slate-500 text-center">
+                No tracks found for &ldquo;{q}&rdquo;
+              </div>
+            ) : results.map(track => (
               <button
                 key={track.id}
+                onMouseDown={e => e.preventDefault()}
                 onClick={() => select(track)}
                 className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-[#2a2d3a] transition-colors text-left"
               >
