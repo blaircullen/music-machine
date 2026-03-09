@@ -14,6 +14,7 @@ ALLOWED_KEYS = {
     "auto_resolve_threshold",
     "upgrade_scan_limit",
     "upgrade_concurrency",
+    "lastfm_api_key",
 }
 
 # Read-only environment-derived values surfaced in GET response
@@ -28,6 +29,7 @@ DEFAULTS = {
     "auto_resolve_threshold": "0.0",
     "upgrade_scan_limit": "0",
     "upgrade_concurrency": "8",
+    "lastfm_api_key": "",
 }
 
 
