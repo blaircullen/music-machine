@@ -8,6 +8,7 @@ interface SettingsData {
   squid_rate_limit: string
   auto_resolve_threshold: string
   upgrade_scan_folders: string
+  lastfm_api_key: string
 }
 
 async function apiPut<T>(url: string, body: unknown): Promise<T> {
@@ -27,6 +28,7 @@ export default function Settings() {
   const [rateLimit, setRateLimit] = useState('3')
   const [autoResolve, setAutoResolve] = useState('0')
   const [upgradeFolders, setUpgradeFolders] = useState('')
+  const [lastfmApiKey, setLastfmApiKey] = useState('')
 
   useEffect(() => {
     fetch('/api/settings/')
@@ -37,6 +39,7 @@ export default function Settings() {
         setRateLimit(data.squid_rate_limit)
         setAutoResolve(data.auto_resolve_threshold || '0')
         setUpgradeFolders(data.upgrade_scan_folders || '')
+        setLastfmApiKey(data.lastfm_api_key || '')
         setLoading(false)
       })
       .catch(() => {
@@ -52,6 +55,7 @@ export default function Settings() {
         squid_rate_limit: rateLimit,
         auto_resolve_threshold: autoResolve,
         upgrade_scan_folders: upgradeFolders,
+        lastfm_api_key: lastfmApiKey,
       })
       setSettings(data)
       toast.success('Settings saved')
@@ -147,6 +151,31 @@ export default function Settings() {
             onChange={(e) => setAutoResolve(e.target.value)}
             className="w-full h-2 bg-base-700 rounded-full appearance-none cursor-pointer"
           />
+        </div>
+
+        <div>
+          <label htmlFor="lastfm-api-key" className="block text-sm font-medium text-base-400 mb-1.5">
+            Last.fm API Key
+          </label>
+          <input
+            id="lastfm-api-key"
+            type="text"
+            value={lastfmApiKey}
+            onChange={(e) => setLastfmApiKey(e.target.value)}
+            placeholder="Enter your Last.fm API key"
+            className="w-full px-4 py-2.5 bg-base-800/50 border border-glass-border rounded-xl text-sm font-mono"
+          />
+          <p className="mt-1.5 text-xs text-base-500">
+            Required for Stations. Get a key at{' '}
+            <a
+              href="https://www.last.fm/api/account/create"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[#d4a017] hover:text-[#f0c95c] transition-colors underline underline-offset-2"
+            >
+              last.fm/api/account/create
+            </a>
+          </p>
         </div>
 
         <div className="pt-2">
