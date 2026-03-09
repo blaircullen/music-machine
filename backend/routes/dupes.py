@@ -2,7 +2,9 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Query
 
 from database import get_db
 from file_manager import trash_file
@@ -127,10 +129,10 @@ def list_dupes():
 
 
 @router.post("/{group_id}/resolve")
-def resolve_dupe(group_id: int):
+def resolve_dupe(group_id: int, keep_track_id: Optional[int] = Query(None)):
     """
-    Resolve a dupe group by trashing losers. The winner is already recorded
-    in dupe_groups.kept_track_id from the analysis phase.
+    Resolve a dupe group by trashing losers. Optionally override which track to keep
+    via keep_track_id query param; otherwise uses the stored kept_track_id.
     """
     with get_db() as db:
         group = db.execute(
@@ -143,7 +145,8 @@ def resolve_dupe(group_id: int):
     if group["resolved"]:
         return {"ok": True, "moved": 0, "already_resolved": True}
 
-    moved = _resolve_group_internal(group_id, group["kept_track_id"])
+    winner_id = keep_track_id if keep_track_id is not None else group["kept_track_id"]
+    moved = _resolve_group_internal(group_id, winner_id)
     return {"ok": True, "moved": moved}
 
 
