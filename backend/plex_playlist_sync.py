@@ -513,3 +513,106 @@ def wait_for_plex_scan(timeout: int = 120, poll_interval: int = 5):
             pass
         time.sleep(poll_interval)
     logger.warning(f"Plex scan did not complete within {timeout}s, proceeding anyway")
+
+
+def get_plex_artist_tracks(artist_name: str) -> list[dict]:
+    """
+    Find an artist in Plex by name and return all their tracks.
+
+    Returns list of {ratingKey, title, bpm, year} dicts.
+    bpm and year may be None if not embedded in file tags.
+    Returns [] if artist not found in library.
+    """
+    norm_target = _normalize(artist_name)
+    try:
+        resp = _plex_get(f"/library/sections/{MUSIC_SECTION_ID}/search", {
+            "type": "8",
+            "query": artist_name,
+        })
+        artists = resp.json().get("MediaContainer", {}).get("Metadata", [])
+    except Exception as e:
+        logger.warning(f"Plex artist search failed for '{artist_name}': {e}")
+        return []
+
+    if not artists:
+        return []
+
+    # Pick best match by normalized name
+    best = None
+    for a in artists:
+        if _normalize(a.get("title", "")) == norm_target:
+            best = a
+            break
+    if best is None:
+        best = artists[0]  # Accept closest result
+
+    try:
+        resp = _plex_get(f"/library/metadata/{best['ratingKey']}/allLeaves")
+        tracks = resp.json().get("MediaContainer", {}).get("Metadata", [])
+    except Exception as e:
+        logger.warning(f"Plex track fetch failed for artist '{artist_name}': {e}")
+        return []
+
+    return [
+        {
+            "ratingKey": t["ratingKey"],
+            "title": t.get("title"),
+            "bpm": t.get("bpm"),      # int or None
+            "year": t.get("year"),    # int or None
+        }
+        for t in tracks
+    ]
+
+
+def sync_keys_to_playlist(playlist_name: str, rating_keys: list[str]) -> dict:
+    """
+    Create or update a Plex playlist with the given rating keys.
+    Full replacement — removes tracks not in rating_keys, adds missing ones.
+    Preserves playlist order of rating_keys.
+
+    Returns {added, removed, total}.
+    """
+    if not rating_keys:
+        logger.warning(f"sync_keys_to_playlist called with empty keys for '{playlist_name}'")
+        return {"added": 0, "removed": 0, "total": 0}
+
+    machine_id = get_machine_id()
+    existing = _get_playlist(playlist_name)
+
+    if existing:
+        pl_id = _playlist_id(existing)
+        current_keys = _get_playlist_track_keys(pl_id)
+        current_set = set(current_keys)
+        desired_set = set(rating_keys)
+
+        to_remove = [k for k in current_keys if k not in desired_set]
+        to_add = [k for k in rating_keys if k not in current_set]
+
+        removed = 0
+        if to_remove:
+            uri = _build_uri(machine_id, to_remove)
+            _plex_delete(f"/playlists/{pl_id}/items", {"uri": uri})
+            removed = len(to_remove)
+
+        added = 0
+        if to_add:
+            uri = _build_uri(machine_id, to_add)
+            _plex_put(f"/playlists/{pl_id}/items", {"uri": uri})
+            added = len(to_add)
+
+        logger.info(
+            f"Station playlist '{playlist_name}': +{added} -{removed}, "
+            f"total {len(rating_keys)}"
+        )
+        return {"added": added, "removed": removed, "total": len(rating_keys)}
+
+    else:
+        uri = _build_uri(machine_id, rating_keys)
+        _plex_post("/playlists", {
+            "type": "audio",
+            "title": playlist_name,
+            "smart": "0",
+            "uri": uri,
+        })
+        logger.info(f"Created station playlist '{playlist_name}' with {len(rating_keys)} tracks")
+        return {"added": len(rating_keys), "removed": 0, "total": len(rating_keys)}
