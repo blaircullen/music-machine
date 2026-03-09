@@ -118,6 +118,33 @@ def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_tag_jobs_status ON tag_jobs(status);
             CREATE INDEX IF NOT EXISTS idx_tag_jobs_file_path ON tag_jobs(file_path);
+
+            CREATE TABLE IF NOT EXISTS stations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                seed_artists TEXT NOT NULL DEFAULT '[]',
+                bpm_min INTEGER,
+                bpm_max INTEGER,
+                decade_min INTEGER,
+                decade_max INTEGER,
+                plex_playlist_name TEXT NOT NULL,
+                lastfm_min_listeners INTEGER NOT NULL DEFAULT 500000,
+                track_count INTEGER NOT NULL DEFAULT 0,
+                last_refreshed TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS station_track_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                station_id INTEGER NOT NULL REFERENCES stations(id) ON DELETE CASCADE,
+                rating_key TEXT NOT NULL,
+                generated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_station_track_history_station_id
+                ON station_track_history(station_id);
+            CREATE INDEX IF NOT EXISTS idx_station_track_history_generated_at
+                ON station_track_history(generated_at);
         """)
 
         # Insert default settings if not present
@@ -126,6 +153,7 @@ def init_db():
             ("upgrade_scan_limit", "0"),
             ("upgrade_concurrency", "2"),
             ("upgrade_include_flac_hires", "true"),
+            ("lastfm_api_key", ""),
         ]
         for key, value in defaults:
             db.execute(
