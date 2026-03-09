@@ -250,7 +250,7 @@ def get_concurrency() -> int:
             "SELECT value FROM settings WHERE key = 'sonic_concurrency'"
         ).fetchone()
         conn.close()
-        return max(1, min(8, int(row["value"]))) if row else 4
+        return max(1, min(32, int(row["value"]))) if row else 4
     except Exception:
         return 4
 
