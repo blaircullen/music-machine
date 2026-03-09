@@ -3,8 +3,9 @@ Sonic Analyzer Worker
 Polls analysis_queue, runs essentia_streaming_extractor_music on each FLAC,
 parses the output JSON, and stores feature scalars + vector in track_features.
 
-Runs at idle CPU/IO priority (nice -n 19 / ionice -c 3) to avoid competing
-with Plex and music-machine on Beast.
+Concurrency is controlled by the 'sonic_concurrency' settings key (default 2, max 4).
+Each thread independently picks tracks from analysis_queue using an in-memory
+in-progress set to prevent double-processing.
 
 Feature vector layout (73 dims, float32):
   [0:13]   MFCC mean (13)
@@ -24,6 +25,7 @@ import sqlite3
 import struct
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -35,10 +37,14 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = os.environ.get("DB_PATH", "/data/music-machine.db")
 MUSIC_PATH = os.environ.get("MUSIC_PATH", "/music")
-POLL_INTERVAL = 30      # seconds between queue checks when idle
-INTER_TRACK_SLEEP = 0.5  # seconds between tracks to throttle CPU
+POLL_INTERVAL = 15      # seconds to wait when queue is empty
+INTER_TRACK_SLEEP = 0.1  # brief pause between tracks per thread
 
 FEATURE_DIM = 73
+
+# In-memory set of track_ids currently being analyzed (prevents double-pick)
+_in_progress: set[int] = set()
+_in_progress_lock = threading.Lock()
 
 
 def get_db():
@@ -159,9 +165,8 @@ def analyze_track(track_id: int, file_path: str) -> bool:
         out_path = tf.name
 
     try:
+        # Run at full CPU priority for fastest initial bulk analysis
         cmd = [
-            "nice", "-n", "19",
-            "ionice", "-c", "3",
             "essentia_streaming_extractor_music",
             str(path),
             out_path,
@@ -238,20 +243,37 @@ def get_concurrency() -> int:
             "SELECT value FROM settings WHERE key = 'sonic_concurrency'"
         ).fetchone()
         conn.close()
-        return max(1, min(4, int(row["value"]))) if row else 2
+        return max(1, min(8, int(row["value"]))) if row else 4
     except Exception:
-        return 2
+        return 4
 
 
-def run_worker():
-    logger.info(f"Sonic analyzer worker starting. DB={DB_PATH}, MUSIC={MUSIC_PATH}")
-
+def _worker_thread(worker_id: int):
+    """Single worker thread: continuously picks and analyzes tracks from analysis_queue."""
+    logger.info(f"Worker thread {worker_id} starting")
     while True:
         try:
+            with _in_progress_lock:
+                in_prog = list(_in_progress)
+
             conn = get_db()
-            row = conn.execute(
-                "SELECT track_id FROM analysis_queue ORDER BY queued_at LIMIT 1"
-            ).fetchone()
+            if in_prog:
+                placeholders = ",".join("?" * len(in_prog))
+                row = conn.execute(
+                    f"SELECT aq.track_id, t.file_path "
+                    f"FROM analysis_queue aq "
+                    f"JOIN tracks t ON t.id = aq.track_id "
+                    f"WHERE aq.track_id NOT IN ({placeholders}) "
+                    f"ORDER BY aq.queued_at LIMIT 1",
+                    in_prog,
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT aq.track_id, t.file_path "
+                    "FROM analysis_queue aq "
+                    "JOIN tracks t ON t.id = aq.track_id "
+                    "ORDER BY aq.queued_at LIMIT 1"
+                ).fetchone()
             conn.close()
 
             if row is None:
@@ -259,30 +281,47 @@ def run_worker():
                 continue
 
             track_id = row["track_id"]
+            file_path = row["file_path"]
 
-            # Get file path from tracks table
-            conn = get_db()
-            track_row = conn.execute(
-                "SELECT file_path FROM tracks WHERE id = ?", (track_id,)
-            ).fetchone()
-            conn.close()
+            with _in_progress_lock:
+                if track_id in _in_progress:
+                    time.sleep(0.1)
+                    continue
+                _in_progress.add(track_id)
 
-            if track_row is None:
-                # Track deleted from DB; remove from queue
-                conn = get_db()
-                conn.execute(
-                    "DELETE FROM analysis_queue WHERE track_id = ?", (track_id,)
-                )
-                conn.commit()
-                conn.close()
-                continue
-
-            analyze_track(track_id, track_row["file_path"])
-            time.sleep(INTER_TRACK_SLEEP)
+            try:
+                analyze_track(track_id, file_path)
+                time.sleep(INTER_TRACK_SLEEP)
+            finally:
+                with _in_progress_lock:
+                    _in_progress.discard(track_id)
 
         except Exception as e:
-            logger.error(f"Worker loop error: {e}")
+            logger.error(f"Worker {worker_id} error: {e}")
             time.sleep(10)
+
+
+def run_worker():
+    concurrency = get_concurrency()
+    logger.info(
+        f"Sonic analyzer starting: DB={DB_PATH}, MUSIC={MUSIC_PATH}, "
+        f"concurrency={concurrency} (full CPU priority)"
+    )
+
+    threads = []
+    for i in range(concurrency):
+        t = threading.Thread(
+            target=_worker_thread,
+            args=(i,),
+            daemon=True,
+            name=f"sonic-worker-{i}",
+        )
+        t.start()
+        threads.append(t)
+
+    # Block until all threads die (they don't — this runs forever)
+    for t in threads:
+        t.join()
 
 
 if __name__ == "__main__":
