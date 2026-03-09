@@ -72,6 +72,29 @@ def _scheduled_playlist_sync_loop():
             logger.error(f"Scheduled playlist sync failed: {e}")
 
 
+def _scheduled_station_refresh_loop():
+    """Refresh all Pandora stations daily at 6 AM."""
+    from stations_service import refresh_all_stations
+
+    while True:
+        now = datetime.now()
+        target = now.replace(hour=6, minute=0, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        wait_seconds = (target - now).total_seconds()
+        logger.info(
+            f"Next station refresh at {target.isoformat()}, sleeping {wait_seconds:.0f}s"
+        )
+        time.sleep(wait_seconds)
+
+        logger.info("Starting scheduled station refresh (6 AM daily)")
+        try:
+            refresh_all_stations()
+            logger.info("Scheduled station refresh complete")
+        except Exception as e:
+            logger.error(f"Scheduled station refresh failed: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Initialize database schema and defaults
@@ -123,6 +146,12 @@ async def lifespan(app: FastAPI):
     )
     playlist_sync_thread.start()
 
+    # Start the daily station refresh thread
+    station_refresh_thread = threading.Thread(
+        target=_scheduled_station_refresh_loop, daemon=True, name="station-refresh-scheduler"
+    )
+    station_refresh_thread.start()
+
     logger.info("music-machine backend ready")
     yield
     logger.info("music-machine backend shutting down")
@@ -131,7 +160,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="music-machine", version="2.0.0", lifespan=lifespan)
 
 # Import and register all routers
-from routes import scan, dupes, upgrades, trash, stats, jobs, settings, reorg, playlists, tagger
+from routes import scan, dupes, upgrades, trash, stats, jobs, settings, reorg, playlists, tagger, stations
 
 app.include_router(scan.router)
 app.include_router(dupes.router)
@@ -143,6 +172,7 @@ app.include_router(settings.router)
 app.include_router(reorg.router)
 app.include_router(playlists.router)
 app.include_router(tagger.router)
+app.include_router(stations.router)
 
 
 @app.websocket("/ws")
