@@ -43,7 +43,7 @@ INTER_TRACK_SLEEP = 0.1  # brief pause between tracks per thread
 FEATURE_DIM = 73
 
 # In-memory set of track_ids currently being analyzed (prevents double-pick)
-_in_progress: set[int] = set()
+_in_progress = set()  # type: ignore[var-annotated]  # older Python compat
 _in_progress_lock = threading.Lock()
 
 
@@ -90,7 +90,7 @@ def _get_list(d, *keys, length=13, default=0.0):
     return [default] * length
 
 
-def extract_features(data: dict) -> tuple[dict, list[float]]:
+def extract_features(data):  # type: (dict) -> tuple
     """
     Parse Essentia JSON output into scalar features and a fixed-dim float32 vector.
     Returns (scalars_dict, feature_vector_list).
