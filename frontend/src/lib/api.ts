@@ -131,6 +131,37 @@ export interface TaggerResult {
   updated_at: string
 }
 
+export interface Station {
+  id: number
+  name: string
+  seed_artists: string[]
+  bpm_min: number | null
+  bpm_max: number | null
+  decade_min: number | null
+  decade_max: number | null
+  plex_playlist_name: string
+  lastfm_min_listeners: number
+  track_count: number
+  last_refreshed: string | null
+  created_at: string
+}
+
+export interface StationCreate {
+  name: string
+  seed_artists: string[]
+  bpm_min?: number | null
+  bpm_max?: number | null
+  decade_min?: number | null
+  decade_max?: number | null
+  plex_playlist_name?: string
+  lastfm_min_listeners?: number
+}
+
+export interface StationRefreshStatus {
+  running: boolean
+  error: string | null
+}
+
 const BASE = '/api'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -258,4 +289,29 @@ export function retryTagJob(id: number): Promise<{ ok: boolean; status?: string;
 
 export function skipTagJob(id: number): Promise<{ ok: boolean }> {
   return request<{ ok: boolean }>(`/tagger/${id}/skip`, { method: 'POST' })
+}
+
+// Stations
+export function getStations(): Promise<Station[]> {
+  return request<Station[]>('/stations')
+}
+
+export function createStation(data: StationCreate): Promise<Station> {
+  return request<Station>('/stations', { method: 'POST', body: JSON.stringify(data) })
+}
+
+export function updateStation(id: number, data: Partial<StationCreate>): Promise<Station> {
+  return request<Station>(`/stations/${id}`, { method: 'PUT', body: JSON.stringify(data) })
+}
+
+export function deleteStation(id: number): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/stations/${id}`, { method: 'DELETE' })
+}
+
+export function refreshStation(id: number): Promise<{ ok: boolean; error?: string }> {
+  return request<{ ok: boolean; error?: string }>(`/stations/${id}/refresh`, { method: 'POST' })
+}
+
+export function getStationRefreshStatus(id: number): Promise<StationRefreshStatus> {
+  return request<StationRefreshStatus>(`/stations/${id}/status`)
 }
