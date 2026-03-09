@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Radio, Plus, RefreshCw, Trash2, Check, X } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
 import { GlassCard } from '../components/ui/GlassCard'
 import { Button } from '../components/ui/Button'
 import { Badge } from '../components/ui/Badge'
@@ -11,6 +12,68 @@ import {
   type Station, type StationCreate,
 } from '../lib/api'
 import toast from 'react-hot-toast'
+
+// ------------------------------------------------------------------
+// Equalizer bars — ambient music indicator, livens up while refreshing
+// ------------------------------------------------------------------
+
+function EqualizerBars({ active }: { active: boolean }) {
+  const heights = [0.45, 0.80, 1.0, 0.65, 0.85]
+  return (
+    <div className="flex items-end gap-[2px] h-3.5 shrink-0">
+      {heights.map((h, i) => (
+        <motion.div
+          key={i}
+          className="w-[3px] rounded-full"
+          style={{ backgroundColor: active ? '#d4a017' : 'rgba(212,160,23,0.35)' }}
+          animate={{
+            height: [
+              `${h * (active ? 14 : 7)}px`,
+              `${(1.05 - h) * (active ? 14 : 7) + 1}px`,
+              `${h * (active ? 14 : 7)}px`,
+            ],
+          }}
+          transition={{
+            duration: active ? 0.45 : 1.8,
+            repeat: Infinity,
+            delay: i * (active ? 0.07 : 0.22),
+            ease: 'easeInOut',
+          }}
+        />
+      ))}
+    </div>
+  )
+}
+
+// ------------------------------------------------------------------
+// Refresh flavor text — cycles through contextual messages during the wait
+// ------------------------------------------------------------------
+
+function getRefreshMessages(seedArtists: string[]): string[] {
+  const first = seedArtists[0] ?? 'your artists'
+  const second = seedArtists[1]
+  return [
+    `Asking Last.fm what sounds like ${first}…`,
+    second ? `Expanding the ${second} universe…` : 'Mapping the similarity graph…',
+    'Cross-referencing your Plex library…',
+    'Applying recency weights…',
+    'Drawing the final sample…',
+    'Syncing playlist to Plex…',
+  ]
+}
+
+function useRefreshMessages(active: boolean, seedArtists: string[]) {
+  const [idx, setIdx] = useState(0)
+  const msgs = getRefreshMessages(seedArtists)
+
+  useEffect(() => {
+    if (!active) { setIdx(0); return }
+    const id = setInterval(() => setIdx(i => (i + 1) % msgs.length), 2600)
+    return () => clearInterval(id)
+  }, [active, msgs.length])
+
+  return active ? msgs[idx] : null
+}
 
 // ------------------------------------------------------------------
 // Create Station Modal
@@ -206,13 +269,16 @@ function CreateStationModal({ open, onClose, onCreated }: CreateModalProps) {
 
 interface StationCardProps {
   station: Station
+  index: number
   onDelete: (id: number) => void
   onRefreshed: (station: Station) => void
 }
 
-function StationCard({ station, onDelete, onRefreshed }: StationCardProps) {
+function StationCard({ station, index, onDelete, onRefreshed }: StationCardProps) {
   const [refreshing, setRefreshing] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [justRefreshed, setJustRefreshed] = useState(false)
+  const refreshMsg = useRefreshMessages(refreshing, station.seed_artists)
 
   async function handleRefresh() {
     setRefreshing(true)
@@ -233,6 +299,8 @@ function StationCard({ station, onDelete, onRefreshed }: StationCardProps) {
               toast.error(status.error)
             } else {
               toast.success(`"${station.name}" refreshed`)
+              setJustRefreshed(true)
+              setTimeout(() => setJustRefreshed(false), 1000)
               const stations = await getStations()
               const updated = stations.find(s => s.id === station.id)
               if (updated) onRefreshed(updated)
@@ -266,72 +334,104 @@ function StationCard({ station, onDelete, onRefreshed }: StationCardProps) {
     : 'Never refreshed'
 
   return (
-    <GlassCard className="p-5">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 mb-2">
-            <Radio className="w-4 h-4 text-[#d4a017] shrink-0" />
-            <h3 className="text-white font-semibold text-sm truncate font-[family-name:var(--font-family-display)]">
-              {station.name}
-            </h3>
-          </div>
-
-          <div className="flex flex-wrap gap-1 mb-3">
-            {station.seed_artists.map(a => (
-              <span key={a} className="text-[10px] bg-[#d4a017]/10 text-[#f0c95c] px-2 py-0.5 rounded-full">
-                {a}
-              </span>
-            ))}
-          </div>
-
-          <div className="flex flex-wrap gap-1.5 mb-3">
-            {station.bpm_min != null && station.bpm_max != null && (
-              <Badge variant="blue">{station.bpm_min}–{station.bpm_max} BPM</Badge>
-            )}
-            {station.decade_min != null && (
-              <Badge variant="blue">{String(station.decade_min).slice(2)}s</Badge>
-            )}
-          </div>
-
-          <div className="text-[10px] text-slate-500 space-y-0.5">
-            <div>
-              <span className="text-slate-400">{station.track_count}</span> tracks
-              {' · '}
-              <span className="text-slate-400">{station.plex_playlist_name}</span>
+    <motion.div
+      initial={{ opacity: 0, y: 14 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{
+        duration: 0.35,
+        delay: index * 0.07,
+        ease: [0.25, 1, 0.5, 1],
+      }}
+    >
+      <GlassCard className={`p-5 transition-all duration-500 ${justRefreshed ? 'ring-1 ring-[#d4a017]/40' : ''}`}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 mb-2">
+              <EqualizerBars active={refreshing} />
+              <h3 className="text-white font-semibold text-sm truncate font-[family-name:var(--font-family-display)]">
+                {station.name}
+              </h3>
             </div>
-            <div>{lastRefreshed}</div>
-          </div>
-        </div>
 
-        <div className="flex flex-col gap-1.5 shrink-0">
-          <button
-            onClick={handleRefresh}
-            disabled={refreshing}
-            title="Refresh now"
-            className="p-1.5 text-slate-500 hover:text-[#d4a017] transition-colors disabled:opacity-40"
-          >
-            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
-          </button>
-          {confirmDelete ? (
-            <div className="flex gap-1">
-              <button onClick={handleDelete} title="Confirm delete"
-                className="p-1 text-red-400 hover:text-red-300 transition-colors">
-                <Check className="w-4 h-4" />
-              </button>
-              <button onClick={() => setConfirmDelete(false)} title="Cancel"
-                className="p-1 text-slate-500 hover:text-slate-300 transition-colors">
-                <X className="w-4 h-4" />
-              </button>
+            <div className="flex flex-wrap gap-1 mb-3">
+              {station.seed_artists.map(a => (
+                <span key={a} className="text-[10px] bg-[#d4a017]/10 text-[#f0c95c] px-2 py-0.5 rounded-full">
+                  {a}
+                </span>
+              ))}
             </div>
-          ) : (
-            <button onClick={() => setConfirmDelete(true)} title="Delete station"
-              className="p-1.5 text-slate-500 hover:text-red-400 transition-colors">
-              <Trash2 className="w-4 h-4" />
+
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              {station.bpm_min != null && station.bpm_max != null && (
+                <Badge variant="blue">{station.bpm_min}–{station.bpm_max} BPM</Badge>
+              )}
+              {station.decade_min != null && (
+                <Badge variant="blue">{String(station.decade_min).slice(2)}s</Badge>
+              )}
+            </div>
+
+            <div className="text-[10px] text-slate-500 space-y-0.5 min-h-[2.5rem]">
+              <AnimatePresence mode="wait">
+                {refreshing && refreshMsg ? (
+                  <motion.div
+                    key={refreshMsg}
+                    initial={{ opacity: 0, y: 3 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -3 }}
+                    transition={{ duration: 0.25 }}
+                    className="text-[#d4a017]/70 italic"
+                  >
+                    {refreshMsg}
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    key="stats"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <div>
+                      <span className="text-slate-400">{station.track_count}</span> tracks
+                      {' · '}
+                      <span className="text-slate-400">{station.plex_playlist_name}</span>
+                    </div>
+                    <div>{lastRefreshed}</div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1.5 shrink-0">
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing}
+              title="Refresh now"
+              className="p-1.5 text-slate-500 hover:text-[#d4a017] transition-colors disabled:opacity-40"
+            >
+              <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
             </button>
-          )}
+            {confirmDelete ? (
+              <div className="flex gap-1">
+                <button onClick={handleDelete} title="Confirm delete"
+                  className="p-1 text-red-400 hover:text-red-300 transition-colors">
+                  <Check className="w-4 h-4" />
+                </button>
+                <button onClick={() => setConfirmDelete(false)} title="Cancel"
+                  className="p-1 text-slate-500 hover:text-slate-300 transition-colors">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            ) : (
+              <button onClick={() => setConfirmDelete(true)} title="Delete station"
+                className="p-1.5 text-slate-500 hover:text-red-400 transition-colors">
+                <Trash2 className="w-4 h-4" />
+              </button>
+            )}
+          </div>
         </div>
-      </div>
-    </GlassCard>
+      </GlassCard>
+    </motion.div>
   )
 }
 
@@ -395,7 +495,7 @@ export default function Stations() {
         <EmptyState
           icon={Radio}
           title="No stations yet"
-          description="Create a station by seeding it with artists you love. It will generate a fresh playlist daily."
+          description="Seed a station with a few artists you love. Music Machine will map their sonic neighborhood on Last.fm, cross-reference your library, and generate a fresh playlist every morning — ready for your next ride."
           action={
             <Button onClick={() => setCreateOpen(true)}>
               <Plus className="w-4 h-4 mr-1.5" />
@@ -405,10 +505,11 @@ export default function Stations() {
         />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {stations.map(station => (
+          {stations.map((station, i) => (
             <StationCard
               key={station.id}
               station={station}
+              index={i}
               onDelete={handleDelete}
               onRefreshed={handleRefreshed}
             />

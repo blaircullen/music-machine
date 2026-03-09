@@ -24,12 +24,14 @@ ssh vm101 "cd /home/sunygxc/projects/music-machine && docker compose build --no-
 
 Note: `ssh-add --apple-load-keychain` must run in the same shell session before SSH commands.
 
-### Fast Deploy (frontend-only, no rebuild)
+### Fast Deploy (frontend-only)
+
+There is NO volume mount for `frontend/dist/` — it is baked into the Docker image.
+A full rebuild is always required for frontend changes. Use:
 
 ```bash
-npm --prefix frontend run build
-scp frontend/dist/index.html frontend/dist/assets/*.{js,css} sunygxc@10.0.0.75:~/projects/music-machine/frontend/dist/...
-ssh vm101 'docker restart music-machine'
+rsync -av -e "sshpass -p 'Sh4nn1tyw3b' ssh -o StrictHostKeyChecking=no" frontend/src/ olares@10.0.0.13:~/projects/music-machine/frontend/src/
+ssh olares@10.0.0.13 'cd ~/projects/music-machine && docker compose build --no-cache && docker compose up -d'
 ```
 
 For backend Python changes: scp the .py file + `docker restart music-machine` (no rebuild needed if not adding new deps).
