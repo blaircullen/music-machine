@@ -49,6 +49,29 @@ def _scheduled_scan_loop():
             logger.error(f"Scheduled scan failed: {e}")
 
 
+def _scheduled_playlist_sync_loop():
+    """Sync M3U playlists to Plex daily at 2 AM."""
+    from routes.playlists import _run_sync
+
+    while True:
+        now = datetime.now()
+        target = now.replace(hour=2, minute=0, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        wait_seconds = (target - now).total_seconds()
+        logger.info(
+            f"Next scheduled playlist sync at {target.isoformat()}, sleeping {wait_seconds:.0f}s"
+        )
+        time.sleep(wait_seconds)
+
+        logger.info("Starting scheduled playlist sync (2 AM daily)")
+        try:
+            _run_sync()
+            logger.info("Scheduled playlist sync complete")
+        except Exception as e:
+            logger.error(f"Scheduled playlist sync failed: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Initialize database schema and defaults
@@ -93,6 +116,12 @@ async def lifespan(app: FastAPI):
         target=_scheduled_scan_loop, daemon=True, name="scan-scheduler"
     )
     scheduler_thread.start()
+
+    # Start the daily playlist sync thread
+    playlist_sync_thread = threading.Thread(
+        target=_scheduled_playlist_sync_loop, daemon=True, name="playlist-sync-scheduler"
+    )
+    playlist_sync_thread.start()
 
     logger.info("music-machine backend ready")
     yield
