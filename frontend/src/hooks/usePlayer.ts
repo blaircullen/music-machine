@@ -15,8 +15,6 @@ export interface PlayerState {
 }
 
 export interface PlayerControls {
-  play: () => void
-  pause: () => void
   togglePlay: () => void
   next: () => void
   prev: () => void
@@ -44,6 +42,8 @@ export function usePlayer(stationId: number) {
 
   const stateRef = useRef(state)
   stateRef.current = state
+
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // ------------------------------------------------------------------
   // Load queue on mount
@@ -126,6 +126,10 @@ export function usePlayer(stationId: number) {
     return () => {
       audio.pause()
       audio.src = ''
+      if (pollRef.current) {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+      }
     }
   }, [])
 
@@ -145,8 +149,11 @@ export function usePlayer(stationId: number) {
     setState(s => ({ ...s, currentTime: 0, duration: 0, buffering: true }))
 
     if (wasPlaying || state.currentIndex > 0) {
-      audio.play().catch(() => {
-        setState(s => ({ ...s, playing: false, buffering: false }))
+      audio.addEventListener('canplay', function playWhenReady() {
+        audio.removeEventListener('canplay', playWhenReady)
+        audio.play().catch(() => {
+          setState(s => ({ ...s, playing: false, buffering: false }))
+        })
       })
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -157,12 +164,6 @@ export function usePlayer(stationId: number) {
   // ------------------------------------------------------------------
 
   const controls: PlayerControls = {
-    play() {
-      audioRef.current?.play().catch(() => setState(s => ({ ...s, playing: false })))
-    },
-    pause() {
-      audioRef.current?.pause()
-    },
     togglePlay() {
       const audio = audioRef.current
       if (!audio) return
@@ -227,16 +228,18 @@ export function usePlayer(stationId: number) {
         await refreshStation(stationId)
         // Poll until refresh complete
         await new Promise<void>((resolve, reject) => {
-          const poll = setInterval(async () => {
+          pollRef.current = setInterval(async () => {
             try {
               const status = await getStationRefreshStatus(stationId)
               if (!status.running) {
-                clearInterval(poll)
+                clearInterval(pollRef.current!)
+                pollRef.current = null
                 if (status.error) reject(new Error(status.error))
                 else resolve()
               }
             } catch (e) {
-              clearInterval(poll)
+              clearInterval(pollRef.current!)
+              pollRef.current = null
               reject(e)
             }
           }, 2000)

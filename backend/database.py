@@ -196,6 +196,8 @@ def init_db():
                 ON station_track_history(station_id);
             CREATE INDEX IF NOT EXISTS idx_station_track_history_generated_at
                 ON station_track_history(generated_at);
+            CREATE INDEX IF NOT EXISTS idx_station_track_history_station_generated
+                ON station_track_history(station_id, generated_at);
             CREATE INDEX IF NOT EXISTS idx_track_features_analyzed_at
                 ON track_features(analyzed_at);
             CREATE INDEX IF NOT EXISTS idx_analysis_queue_queued_at

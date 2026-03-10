@@ -24,7 +24,11 @@ router = APIRouter(tags=["sonic"])
 logger = logging.getLogger(__name__)
 
 PLEX_URL = os.environ.get("PLEX_URL", "http://10.0.0.13:32400")
-PLEX_TOKEN = os.environ.get("PLEX_TOKEN", "mxrEzLiMjZ1FftGMZaiq")
+PLEX_TOKEN = os.environ.get("PLEX_TOKEN", "")
+MUSIC_ROOT = Path(os.environ.get("MUSIC_PATH", "/music")).resolve()
+
+# In-memory cache: track_id → plex_rating_key (stable mapping, lost on restart)
+_rating_key_cache: dict[int, str] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +120,8 @@ def stream_track(track_id: int):
         raise HTTPException(status_code=404, detail="Track not found")
 
     file_path = Path(row["file_path"])
+    if not file_path.resolve().is_relative_to(MUSIC_ROOT):
+        raise HTTPException(status_code=403, detail="Access denied")
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Audio file not found on disk")
 
@@ -164,8 +170,8 @@ def station_feedback(station_id: int, body: FeedbackBody):
 async def track_artwork(track_id: int):
     """
     Proxy Plex album artwork for a track.
-    Searches Plex by artist+title, then fetches the thumb URL.
-    Falls back to a 404 if no artwork is found.
+    Caches ratingKey in-memory so each track incurs at most one Plex search.
+    Both metadata and image fetches share a single httpx client.
     """
     with get_db() as db:
         row = db.execute(
@@ -176,12 +182,19 @@ async def track_artwork(track_id: int):
         raise HTTPException(status_code=404, detail="Track not found")
 
     from plex_playlist_sync import search_plex_track
+    from fastapi.concurrency import run_in_threadpool
 
-    rating_key = search_plex_track(row["artist"] or "", row["title"] or "")
+    # Use cached ratingKey if available; otherwise resolve (sync call → threadpool)
+    rating_key = _rating_key_cache.get(track_id)
     if not rating_key:
-        raise HTTPException(status_code=404, detail="Track not found in Plex")
+        rating_key = await run_in_threadpool(
+            search_plex_track, row["artist"] or "", row["title"] or ""
+        )
+        if not rating_key:
+            raise HTTPException(status_code=404, detail="Track not found in Plex")
+        _rating_key_cache[track_id] = rating_key
 
-    # Fetch thumb URL from Plex metadata
+    # Fetch metadata and image in one client session
     async with httpx.AsyncClient(timeout=10) as client:
         try:
             resp = await client.get(
@@ -197,11 +210,9 @@ async def track_artwork(track_id: int):
             logger.warning(f"Plex artwork lookup failed for track {track_id}: {e}")
             raise HTTPException(status_code=404, detail="Artwork not available")
 
-    if not thumb:
-        raise HTTPException(status_code=404, detail="No artwork in Plex")
+        if not thumb:
+            raise HTTPException(status_code=404, detail="No artwork in Plex")
 
-    # Stream the image from Plex
-    async with httpx.AsyncClient(timeout=10) as client:
         try:
             img_resp = await client.get(
                 f"{PLEX_URL}{thumb}",

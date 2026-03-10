@@ -19,7 +19,6 @@ when sonic-analyzer sets settings.sonic_cache_dirty = 'true'.
 import json
 import logging
 import random
-import struct
 import threading
 from datetime import datetime, timedelta
 from typing import Optional
@@ -91,24 +90,27 @@ def _load_feature_cache():
 
 
 def _ensure_cache():
-    """Return (matrix, track_ids), refreshing if dirty."""
+    """Return (matrix, track_ids), refreshing if dirty.
+
+    Always checks the DB dirty flag so the sonic-analyzer sidecar's writes
+    are picked up without a backend restart.
+    """
     global _cache_dirty
     with _cache_lock:
-        if _cache_dirty or _feature_matrix is None:
-            # Check DB dirty flag
-            try:
-                from database import get_db
-                with get_db() as db:
-                    row = db.execute(
-                        "SELECT value FROM settings WHERE key = 'sonic_cache_dirty'"
-                    ).fetchone()
-                if row and row["value"] == "true":
-                    _cache_dirty = True
-            except Exception:
-                pass
+        # Always poll the DB flag — it's the cross-process signal from sonic-analyzer
+        try:
+            from database import get_db
+            with get_db() as db:
+                row = db.execute(
+                    "SELECT value FROM settings WHERE key = 'sonic_cache_dirty'"
+                ).fetchone()
+            if row and row["value"] == "true":
+                _cache_dirty = True
+        except Exception:
+            pass
 
-            if _cache_dirty or _feature_matrix is None:
-                _load_feature_cache()
+        if _cache_dirty or _feature_matrix is None:
+            _load_feature_cache()
 
         return _feature_matrix, _track_ids
 
@@ -127,7 +129,6 @@ def invalidate_cache():
 def _unpack_vector(blob: bytes) -> Optional[np.ndarray]:
     if not blob:
         return None
-    n = len(blob) // 4
     vec = np.frombuffer(blob, dtype=np.float32).copy()
     norm = np.linalg.norm(vec)
     if norm > 0:
@@ -136,7 +137,7 @@ def _unpack_vector(blob: bytes) -> Optional[np.ndarray]:
 
 
 def _pack_vector(vec: np.ndarray) -> bytes:
-    return struct.pack(f"{len(vec)}f", *vec.astype(np.float32))
+    return vec.astype(np.float32).tobytes()
 
 
 def _cosine_similarity(matrix: np.ndarray, target: np.ndarray) -> np.ndarray:
@@ -472,9 +473,11 @@ def _refresh_diverse_seeds(
     vecs = [_unpack_vector(r["feature_vector"]) for r in rows]
     vecs = [v for v in vecs if v is not None]
     if len(vecs) < 2:
-        # Fall back to centroid
-        centroid = np.mean(np.array(vecs, dtype=np.float32), axis=0)
-        return _similarity_search(matrix, track_ids, centroid, excluded, n=_SAMPLE_SIZE)
+        if not vecs:
+            # No vectors at all — fall back to global matrix mean
+            return _similarity_search(matrix, track_ids, matrix.mean(axis=0), excluded, n=_SAMPLE_SIZE)
+        # Single valid vector — use it directly as the target
+        return _similarity_search(matrix, track_ids, vecs[0], excluded, n=_SAMPLE_SIZE)
 
     # Simple k=2 split via single Lloyd's iteration from extreme seeds
     arr = np.array(vecs, dtype=np.float32)

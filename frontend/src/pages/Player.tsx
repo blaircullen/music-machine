@@ -1,13 +1,7 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { ChevronLeft, SkipBack, Play, Pause, SkipForward, ThumbsUp, ThumbsDown, RefreshCw } from 'lucide-react'
 import { usePlayer } from '../hooks/usePlayer'
-
-function formatTime(secs: number): string {
-  if (!isFinite(secs) || isNaN(secs)) return '0:00'
-  const m = Math.floor(secs / 60)
-  const s = Math.floor(secs % 60)
-  return `${m}:${s.toString().padStart(2, '0')}`
-}
+import { formatDuration } from '../lib/utils'
 
 export default function Player() {
   const { stationId } = useParams<{ stationId: string }>()
@@ -129,8 +123,8 @@ export default function Player() {
               }}
             />
             <div className="flex justify-between text-[10px] text-white/25 mt-1.5">
-              <span>{formatTime(state.currentTime)}</span>
-              <span>{formatTime(state.duration)}</span>
+              <span>{formatDuration(state.currentTime)}</span>
+              <span>{formatDuration(state.duration)}</span>
             </div>
           </div>
 

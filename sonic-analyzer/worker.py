@@ -109,7 +109,7 @@ def extract_features(data):  # type: (dict) -> tuple
     key_strength = _get(to, "key_edma", "strength")
 
     # --- Feature vector ---
-    vector: list[float] = []
+    vector = []  # type: list
 
     # MFCC mean + var (26 dims)
     mfcc = ll.get("mfcc", {})
@@ -239,7 +239,14 @@ def analyze_track(track_id: int, file_path: str) -> bool:
             conn.close()
 
     except subprocess.TimeoutExpired:
-        logger.error(f"Track {track_id}: extractor timed out after 120s")
+        logger.error(f"Track {track_id}: extractor timed out after 120s, removing from queue")
+        try:
+            conn = get_db()
+            conn.execute("DELETE FROM analysis_queue WHERE track_id = ?", (track_id,))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
         return False
     except Exception as e:
         logger.error(f"Track {track_id}: analysis failed: {e}")

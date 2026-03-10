@@ -7,7 +7,7 @@ import { Button } from '../components/ui/Button'
 import { Modal } from '../components/ui/Modal'
 import { EmptyState } from '../components/ui/EmptyState'
 import {
-  getStations, createStation, deleteStation,
+  getStations, getStation, createStation, deleteStation,
   refreshStation, getStationRefreshStatus, searchStationTracks,
   getAnalysisStats,
   type Station, type StationCreate, type SeedTrack, type AnalysisStats,
@@ -379,6 +379,13 @@ function StationCard({ station, index, onDelete, onRefreshed }: StationCardProps
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [justRefreshed, setJustRefreshed] = useState(false)
   const refreshMsg = useRefreshMessages(refreshing)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current)
+    }
+  }, [])
 
   async function handleRefresh() {
     setRefreshing(true)
@@ -389,11 +396,12 @@ function StationCard({ station, index, onDelete, onRefreshed }: StationCardProps
         setRefreshing(false)
         return
       }
-      const poll = setInterval(async () => {
+      pollRef.current = setInterval(async () => {
         try {
           const status = await getStationRefreshStatus(station.id)
           if (!status.running) {
-            clearInterval(poll)
+            clearInterval(pollRef.current!)
+            pollRef.current = null
             setRefreshing(false)
             if (status.error) {
               toast.error(status.error)
@@ -401,13 +409,13 @@ function StationCard({ station, index, onDelete, onRefreshed }: StationCardProps
               toast.success(`"${station.name}" refreshed`)
               setJustRefreshed(true)
               setTimeout(() => setJustRefreshed(false), 1000)
-              const stations = await getStations()
-              const updated = stations.find(s => s.id === station.id)
-              if (updated) onRefreshed(updated)
+              const updated = await getStation(station.id)
+              onRefreshed(updated)
             }
           }
         } catch {
-          clearInterval(poll)
+          clearInterval(pollRef.current!)
+          pollRef.current = null
           setRefreshing(false)
         }
       }, 2000)

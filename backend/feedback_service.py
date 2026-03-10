@@ -30,7 +30,7 @@ _PLAY_THRESHOLD = 0.80  # fraction of track duration → counts as "played"
 def _plex_get(path: str, params: Optional[dict] = None) -> Optional[requests.Response]:
     import os
     plex_url = os.environ.get("PLEX_URL", "http://10.0.0.13:32400")
-    plex_token = os.environ.get("PLEX_TOKEN", "mxrEzLiMjZ1FftGMZaiq")
+    plex_token = os.environ.get("PLEX_TOKEN", "")
     try:
         resp = requests.get(
             f"{plex_url}{path}",

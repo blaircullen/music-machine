@@ -319,6 +319,10 @@ export function getStations(): Promise<Station[]> {
   return request<Station[]>('/stations')
 }
 
+export function getStation(id: number): Promise<Station> {
+  return request<Station>(`/stations/${id}`)
+}
+
 export function createStation(data: StationCreate): Promise<Station> {
   return request<Station>('/stations', { method: 'POST', body: JSON.stringify(data) })
 }
