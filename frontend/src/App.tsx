@@ -1,8 +1,9 @@
 import { lazy, Suspense, useState } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { Menu } from 'lucide-react'
 import { Sidebar } from './components/layout/Sidebar'
 
+const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Library = lazy(() => import('./pages/Library'))
 const JobLog = lazy(() => import('./pages/JobLog'))
 const Upgrades = lazy(() => import('./pages/Upgrades'))
@@ -61,7 +62,7 @@ export default function App() {
               <main className="lg:ml-[220px] flex-1 p-4 pt-18 lg:p-8 lg:pt-8 min-h-screen min-w-0 overflow-x-hidden">
                 <Suspense fallback={<PageFallback />}>
                   <Routes>
-                    <Route path="/" element={<Navigate to="/stations" replace />} />
+                    <Route path="/" element={<Dashboard />} />
                     <Route path="/library" element={<Library />} />
                     <Route path="/jobs" element={<JobLog />} />
                     <Route path="/upgrades" element={<Upgrades />} />
