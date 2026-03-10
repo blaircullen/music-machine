@@ -185,10 +185,18 @@ def analyze_track(track_id: int, file_path: str) -> bool:
             timeout=120,
         )
         if result.returncode != 0:
+            stderr_snippet = result.stderr[:200]
             logger.error(
-                f"Track {track_id}: extractor failed (rc={result.returncode}): "
-                f"{result.stderr[:200]}"
+                f"Track {track_id}: extractor failed (rc={result.returncode}), "
+                f"removing from queue: {stderr_snippet}"
             )
+            try:
+                conn = get_db()
+                conn.execute("DELETE FROM analysis_queue WHERE track_id = ?", (track_id,))
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
             return False
 
         with open(out_path) as f:
