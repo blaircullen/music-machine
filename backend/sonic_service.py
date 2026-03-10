@@ -381,7 +381,8 @@ def refresh_station(station: dict) -> dict:
 
     result = {"ok": False, "track_count": 0, "error": None}
     try:
-        seed_track_ids = json.loads(station.get("seed_track_ids") or "[]")
+        raw = station.get("seed_track_ids") or "[]"
+        seed_track_ids = raw if isinstance(raw, list) else json.loads(raw)
         if not seed_track_ids:
             raise ValueError("Station has no seed tracks")
 

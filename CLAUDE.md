@@ -34,7 +34,7 @@ rsync -av -e "sshpass -p 'Sh4nn1tyw3b' ssh -o StrictHostKeyChecking=no" frontend
 ssh olares@10.0.0.13 'cd ~/projects/music-machine && docker compose build --no-cache && docker compose up -d'
 ```
 
-For backend Python changes: scp the .py file + `docker restart music-machine` (no rebuild needed if not adding new deps).
+For backend Python changes: `docker cp` the .py file into the container + `docker restart music-machine` (no rebuild needed if not adding new deps). Backend files live at `/app/` inside the container (e.g. `docker cp backend/sonic_service.py music-machine:/app/sonic_service.py`). `scp` to the host path does NOT update the running container — it's baked into the image.
 
 ## Hard Constraints
 
@@ -139,7 +139,7 @@ No automated file actions — user wants to review all duplicate resolutions man
 **Route ordering in FastAPI:** `GET /stations/search/tracks` MUST be defined before `GET /stations/{station_id}` or FastAPI matches "search" as the station_id.
 **Essentia base image Python version:** `ghcr.io/mtg/essentia:latest` ships Python <3.9. Do NOT use generic type annotations (`set[int]`, `tuple[X, Y]`, `list[str]`) — these require 3.9+. Use bare `set()`, plain `tuple`, etc. in `sonic-analyzer/worker.py`.
 **analysis_queue bootstrap:** Scanner only enqueues tracks added during a scan. After first deploy, existing tracks are NOT in the queue. Bootstrap with: `INSERT OR IGNORE INTO analysis_queue (track_id) SELECT id FROM tracks WHERE status='active';`
-**File-not-found loop:** If `analyze_track()` doesn't remove stale tracks from `analysis_queue`, workers tight-loop re-picking the same missing-file tracks. Always DELETE from queue on file-not-found.
+**Infinite retry loop:** If `analyze_track()` doesn't remove failed tracks from `analysis_queue`, workers tight-loop re-picking the same broken tracks and blocking all valid ones. Always DELETE from queue on: (1) file-not-found, (2) extractor non-zero exit (multi-channel audio, empty signal, corrupt file). Both are permanent failures — Essentia cannot recover them.
 **Concurrency setting:** `sonic_concurrency` in settings table (default 2, max 8). Restart sonic-analyzer container after changing — setting is read once at startup.
 **Beast NFS mount:** `/mnt/nas/music` on Beast host. Override maps this into containers. `/mnt/music` and `/mnt/nas_music` are empty dirs — do not use.
 **docker-compose.override.yml sonic-analyzer volumes:** Must be explicitly listed in override for the sonic-analyzer service, otherwise base compose.yml bind mount paths are used (which point to wrong host paths).
