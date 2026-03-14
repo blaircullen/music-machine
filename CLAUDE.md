@@ -16,13 +16,19 @@ Python 3.12, FastAPI, SQLite, React 19, Vite 7, Tailwind CSS v4
 
 ## Deploy (from dev machine)
 
+**From a normal terminal** (SSH keys loaded):
 ```bash
-ssh-add --apple-load-keychain 2>/dev/null
 rsync -av frontend/src/ sunygxc@10.0.0.75:/home/sunygxc/projects/music-machine/frontend/src/
-ssh vm101 "cd /home/sunygxc/projects/music-machine && docker compose build --no-cache && docker compose up -d"
+ssh sunygxc@10.0.0.75 "cd ~/projects/music-machine && docker compose build --no-cache && docker compose up -d"
 ```
 
-Note: `ssh-add --apple-load-keychain` must run in the same shell session before SSH commands.
+**From Claude Code shell** (`ssh-add --apple-load-keychain` does NOT work in Claude's Bash env — use sshpass):
+```bash
+rsync -av -e "sshpass -p 'Sh4nn1tyw3b' ssh -o StrictHostKeyChecking=no" \
+  frontend/src/ sunygxc@10.0.0.75:/home/sunygxc/projects/music-machine/frontend/src/
+sshpass -p 'Sh4nn1tyw3b' ssh -o StrictHostKeyChecking=no sunygxc@10.0.0.75 \
+  "cd ~/projects/music-machine && docker compose build --no-cache && docker compose up -d"
+```
 
 ### Fast Deploy (frontend-only, to Beast directly)
 
@@ -53,6 +59,35 @@ Without `.dockerignore`, `COPY frontend/ ./` copies host `node_modules/` over `n
 ### fetch() Error Handling
 
 JS `fetch()` only rejects on network errors, NOT HTTP errors (4xx/5xx). Always check `res.ok` before updating UI state.
+
+### Path Traversal Guard
+
+Any endpoint that serves files by ID must verify the resolved path stays within the music root:
+```python
+if not file_path.resolve().is_relative_to(MUSIC_ROOT):
+    raise HTTPException(status_code=403, detail="Access denied")
+```
+Always call `.resolve()` first — symlinks bypass naive prefix checks.
+
+### Sync I/O in Async FastAPI Handlers
+
+Sync functions (Plex search, mutagen reads, file stat) called from `async def` endpoints block the event loop. Always wrap with `run_in_threadpool`:
+```python
+from starlette.concurrency import run_in_threadpool
+result = await run_in_threadpool(sync_fn, arg1, arg2)
+```
+
+### analysis_queue — Permanent Failure Rule
+
+Every permanent failure path in `sonic-analyzer/worker.py` MUST delete the track from `analysis_queue`. Missing one causes tight-loop workers that block all valid tracks. Permanent failures: file not found, extractor non-zero exit, extractor timeout. Pattern: `conn.execute("DELETE FROM analysis_queue WHERE track_id = ?", (track_id,))`
+
+### React setInterval Leak Pattern
+
+Any `setInterval` started inside a component must be stored in a `useRef` and cleared in the `useEffect` cleanup:
+```typescript
+const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+useEffect(() => { return () => { if (pollRef.current) clearInterval(pollRef.current) } }, [])
+```
 
 ### Optimistic Flag Clearing
 
@@ -146,4 +181,8 @@ No automated file actions — user wants to review all duplicate resolutions man
 
 ## Plex Library Scan
 
-After upgrades/reorg, trigger: `GET http://10.0.0.7:32400/library/sections/2/refresh?X-Plex-Token=fzVAhz-21g7CfJvA7jK8`
+After upgrades/reorg, trigger (Plex runs on Beast, Music = section 5):
+```bash
+curl -s "http://10.0.0.13:32400/library/sections/5/refresh?X-Plex-Token=fzVAhz-21g7CfJvA7jK8"
+```
+⚠️ Section 2 = 4K Movies. Section 5 = Music. Host is Beast (10.0.0.13), NOT NAS (10.0.0.7).
