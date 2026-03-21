@@ -79,6 +79,33 @@ def _scheduled_playlist_sync_loop():
             logger.error(f"Plex feedback poll failed: {e}")
 
 
+def _scheduled_fingerprint_loop():
+    """Run fingerprint verification for new tracks daily at 4 AM."""
+    from fingerprint_engine import run_incremental, fp_status
+
+    while True:
+        now = datetime.now()
+        target = now.replace(hour=4, minute=0, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        wait_seconds = (target - now).total_seconds()
+        logger.info(
+            f"Next fingerprint batch at {target.isoformat()}, sleeping {wait_seconds:.0f}s"
+        )
+        time.sleep(wait_seconds)
+
+        if fp_status["running"]:
+            logger.info("Fingerprint batch skipped — already in progress")
+            continue
+
+        logger.info("Starting scheduled fingerprint batch (4 AM daily)")
+        try:
+            run_incremental()
+            logger.info("Scheduled fingerprint batch complete")
+        except Exception as e:
+            logger.error(f"Scheduled fingerprint batch failed: {e}")
+
+
 def _scheduled_station_refresh_loop():
     """Refresh all sonic stations daily at 6 AM."""
     from sonic_service import refresh_all_stations
@@ -117,18 +144,23 @@ async def lifespan(app: FastAPI):
             )
             if cur.rowcount:
                 logger.info(f"Cleaned up {cur.rowcount} orphaned running job(s)")
-                # Reset any tracks left in mid-flight states by the crashed job.
-                # 'searching' rows that already have mg_track_id set completed their
-                # search before the crash — promote them to 'found' rather than losing the result.
-                db.execute(
-                    "UPDATE upgrade_queue SET status='found' "
-                    "WHERE status='searching' AND mg_track_id IS NOT NULL"
+            # Always reset mid-flight upgrade queue items — these get stuck if the
+            # process is killed while a search/download is in progress.
+            # 'searching' rows with mg_track_id already have a result — promote to 'found'.
+            found_cur = db.execute(
+                "UPDATE upgrade_queue SET status='found' "
+                "WHERE status='searching' AND mg_track_id IS NOT NULL"
+            )
+            pending_cur = db.execute(
+                "UPDATE upgrade_queue SET status='pending' "
+                "WHERE status IN ('searching', 'downloading')"
+            )
+            if found_cur.rowcount or pending_cur.rowcount:
+                logger.info(
+                    f"Reset stuck upgrade_queue items: "
+                    f"{found_cur.rowcount} → found, {pending_cur.rowcount} → pending"
                 )
-                db.execute(
-                    "UPDATE upgrade_queue SET status='pending' "
-                    "WHERE status IN ('searching', 'downloading')"
-                )
-                db.commit()
+            db.commit()
     except Exception as e:
         logger.warning(f"Failed to clean up orphaned jobs: {e}")
 
@@ -136,10 +168,11 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_event_loop()
 
     # Inject event loop reference into route modules that need it
-    from routes import scan as scan_mod, upgrades as upgrades_mod, tagger as tagger_mod
+    from routes import scan as scan_mod, upgrades as upgrades_mod, tagger as tagger_mod, fingerprint as fp_mod
     scan_mod.set_event_loop(loop)
     upgrades_mod.set_event_loop(loop)
     tagger_mod.set_event_loop(loop)
+    fp_mod.set_event_loop(loop)
 
     # Start the daily scheduled scan thread
     scheduler_thread = threading.Thread(
@@ -159,6 +192,12 @@ async def lifespan(app: FastAPI):
     )
     station_refresh_thread.start()
 
+    # Start the daily fingerprint batch thread (4 AM)
+    fingerprint_thread = threading.Thread(
+        target=_scheduled_fingerprint_loop, daemon=True, name="fingerprint-scheduler"
+    )
+    fingerprint_thread.start()
+
     logger.info("music-machine backend ready")
     yield
     logger.info("music-machine backend shutting down")
@@ -167,7 +206,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="music-machine", version="2.0.0", lifespan=lifespan)
 
 # Import and register all routers
-from routes import scan, dupes, upgrades, trash, stats, jobs, settings, reorg, playlists, tagger, stations, sonic
+from routes import scan, dupes, upgrades, trash, stats, jobs, settings, reorg, playlists, tagger, stations, sonic, fingerprint
 
 app.include_router(scan.router)
 app.include_router(dupes.router)
@@ -181,6 +220,7 @@ app.include_router(playlists.router)
 app.include_router(tagger.router)
 app.include_router(stations.router)
 app.include_router(sonic.router)
+app.include_router(fingerprint.router)
 
 
 @app.websocket("/ws")

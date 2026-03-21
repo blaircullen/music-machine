@@ -204,6 +204,79 @@ def init_db():
                 ON analysis_queue(queued_at);
             CREATE INDEX IF NOT EXISTS idx_station_feedback_station_id
                 ON station_feedback(station_id);
+
+            -- Fingerprint verification engine tables
+            CREATE TABLE IF NOT EXISTS fingerprint_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                track_id INTEGER NOT NULL REFERENCES tracks(id),
+                chromaprint TEXT,
+                acoustid_score REAL,
+                acoustid_recording_id TEXT,
+                acoustid_release_id TEXT,
+                audd_score REAL,
+                audd_data JSON,
+                composite_confidence REAL,
+                match_source TEXT,
+                matched_artist TEXT,
+                matched_title TEXT,
+                matched_album TEXT,
+                matched_album_artist TEXT,
+                matched_year INTEGER,
+                matched_track_number INTEGER,
+                matched_disc_number INTEGER,
+                matched_genre TEXT,
+                matched_genre_raw TEXT,
+                matched_isrc TEXT,
+                matched_label TEXT,
+                matched_composer TEXT,
+                matched_cover_art_url TEXT,
+                matched_spotify_id TEXT,
+                matched_dsp_ids JSON,
+                status TEXT NOT NULL DEFAULT 'pending',
+                error_message TEXT,
+                processed_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(track_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS tag_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                track_id INTEGER NOT NULL REFERENCES tracks(id),
+                fingerprint_result_id INTEGER REFERENCES fingerprint_results(id),
+                original_artist TEXT,
+                original_title TEXT,
+                original_album TEXT,
+                original_album_artist TEXT,
+                original_year INTEGER,
+                original_track_number INTEGER,
+                original_disc_number INTEGER,
+                original_genre TEXT,
+                original_isrc TEXT,
+                original_label TEXT,
+                original_composer TEXT,
+                original_cover_art_hash TEXT,
+                original_cover_art BLOB,
+                snapshot_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS audd_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                requests INTEGER DEFAULT 0,
+                cost_cents REAL DEFAULT 0,
+                UNIQUE(date)
+            );
+
+            CREATE TABLE IF NOT EXISTS genre_map (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                raw_genre TEXT NOT NULL UNIQUE,
+                normalized_genre TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_fp_status ON fingerprint_results(status);
+            CREATE INDEX IF NOT EXISTS idx_fp_confidence ON fingerprint_results(composite_confidence);
+            CREATE INDEX IF NOT EXISTS idx_fp_track ON fingerprint_results(track_id);
         """)
 
         # Insert default settings if not present
@@ -214,6 +287,11 @@ def init_db():
             ("upgrade_include_flac_hires", "true"),
             ("lastfm_api_key", ""),
             ("sonic_concurrency", "2"),
+            ("audd_api_key", "0b109e9c1fef8b670abdd86dd24d3c7d"),
+            ("audd_monthly_budget", "20"),
+            ("fp_auto_threshold", "0.95"),
+            ("fp_review_threshold", "0.50"),
+            ("fp_concurrency", "12"),
         ]
         for key, value in defaults:
             db.execute(
@@ -223,6 +301,13 @@ def init_db():
 
         # Migrate upgrade_queue from slskd columns to MusicGrabber columns
         _migrate_upgrade_queue(db)
+
+        # Seed genre normalization map
+        try:
+            from genre_normalizer import seed_genre_map
+            seed_genre_map()
+        except Exception:
+            pass
 
 
 def _migrate_stations_to_sonic(db):

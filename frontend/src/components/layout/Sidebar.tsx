@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Library, ScrollText, ArrowUpCircle, Wand2, X, Radio, Settings, Copy, Trash2 } from 'lucide-react'
+import { LayoutDashboard, Library, ScrollText, ArrowUpCircle, Wand2, X, Radio, Settings, Copy, Trash2, Fingerprint } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { getStats } from '../../lib/api'
 
@@ -17,6 +17,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/duplicates', label: 'Duplicates', icon: Copy },
   { to: '/upgrades', label: 'Upgrades', icon: ArrowUpCircle },
   { to: '/tagger', label: 'MetaTagger', icon: Wand2 },
+  { to: '/fingerprint', label: 'Fingerprint', icon: Fingerprint },
   { to: '/stations', label: 'Stations', icon: Radio },
   { to: '/trash', label: 'Trash', icon: Trash2 },
   { to: '/jobs', label: 'Job Log', icon: ScrollText },

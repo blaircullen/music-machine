@@ -185,6 +185,97 @@ export interface AnalysisStats {
   coverage_pct: number
 }
 
+// Fingerprint Engine
+export interface FingerprintStats {
+  total_tracks: number
+  processed: number
+  unprocessed: number
+  status_counts: Record<string, number>
+  matched: number
+  flagged: number
+  unmatched: number
+  failed: number
+  audd: {
+    month_requests: number
+    month_cost_dollars: number
+    today_requests: number
+    budget_dollars: number
+    budget_remaining_dollars: number
+    within_budget: boolean
+  }
+  genre_distribution: Array<{ matched_genre: string; count: number }>
+  source_counts: Record<string, number>
+}
+
+export interface FingerprintProgress {
+  running: boolean
+  phase: string
+  processed: number
+  total: number
+  matched: number
+  auto_approved: number
+  flagged: number
+  unmatched: number
+  failed: number
+  elapsed_s: number
+  current_file: string | null
+  dry_run: boolean
+}
+
+export interface FingerprintReviewItem {
+  id: number
+  track_id: number
+  file_path: string
+  format: string
+  bitrate: number
+  duration: number
+  current_artist: string | null
+  current_title: string | null
+  current_album: string | null
+  current_album_artist: string | null
+  current_track_number: number | null
+  matched_artist: string | null
+  matched_title: string | null
+  matched_album: string | null
+  matched_album_artist: string | null
+  matched_year: number | null
+  matched_track_number: number | null
+  matched_disc_number: number | null
+  matched_genre: string | null
+  matched_isrc: string | null
+  matched_label: string | null
+  matched_composer: string | null
+  matched_cover_art_url: string | null
+  composite_confidence: number
+  match_source: string | null
+  acoustid_score: number | null
+  status: string
+}
+
+export interface FingerprintHistoryItem {
+  id: number
+  track_id: number
+  file_path: string
+  original_artist: string | null
+  original_title: string | null
+  original_album: string | null
+  matched_artist: string | null
+  matched_title: string | null
+  matched_album: string | null
+  matched_genre: string | null
+  composite_confidence: number
+  match_source: string | null
+  fp_status: string
+  snapshot_at: string
+}
+
+export interface PaginatedResponse<T> {
+  items: T[]
+  total: number
+  limit: number
+  offset: number
+}
+
 const BASE = '/api'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -365,4 +456,86 @@ export function postStationFeedback(
     method: 'POST',
     body: JSON.stringify({ track_id: trackId, signal }),
   })
+}
+
+// Fingerprint Engine
+export function getFingerprintStats(): Promise<FingerprintStats> {
+  return request<FingerprintStats>('/fingerprint/stats')
+}
+
+export function getFingerprintProgress(): Promise<FingerprintProgress> {
+  return request<FingerprintProgress>('/fingerprint/progress')
+}
+
+export function getFingerprintReview(opts?: {
+  status?: string
+  min_confidence?: number
+  max_confidence?: number
+  source?: string
+  limit?: number
+  offset?: number
+}): Promise<PaginatedResponse<FingerprintReviewItem>> {
+  const params = new URLSearchParams()
+  if (opts?.status) params.set('status', opts.status)
+  if (opts?.min_confidence != null) params.set('min_confidence', String(opts.min_confidence))
+  if (opts?.max_confidence != null) params.set('max_confidence', String(opts.max_confidence))
+  if (opts?.source) params.set('source', opts.source)
+  if (opts?.limit) params.set('limit', String(opts.limit))
+  if (opts?.offset) params.set('offset', String(opts.offset))
+  const qs = params.toString()
+  return request<PaginatedResponse<FingerprintReviewItem>>(`/fingerprint/review${qs ? `?${qs}` : ''}`)
+}
+
+export function approveFingerprintResult(id: number): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/fingerprint/review/${id}/approve`, { method: 'POST' })
+}
+
+export function batchApproveFingerprintResults(opts: { ids?: number[]; min_confidence?: number }): Promise<{ ok: boolean; approved: number }> {
+  return request<{ ok: boolean; approved: number }>('/fingerprint/review/batch-approve', {
+    method: 'POST',
+    body: JSON.stringify(opts),
+  })
+}
+
+export function editFingerprintResult(id: number, metadata: Record<string, unknown>): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/fingerprint/review/${id}/edit`, {
+    method: 'POST',
+    body: JSON.stringify(metadata),
+  })
+}
+
+export function skipFingerprintResult(id: number): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/fingerprint/review/${id}/skip`, { method: 'POST' })
+}
+
+export function getFingerprintUnmatched(limit?: number, offset?: number): Promise<PaginatedResponse<FingerprintReviewItem>> {
+  const params = new URLSearchParams()
+  if (limit) params.set('limit', String(limit))
+  if (offset) params.set('offset', String(offset))
+  const qs = params.toString()
+  return request<PaginatedResponse<FingerprintReviewItem>>(`/fingerprint/unmatched${qs ? `?${qs}` : ''}`)
+}
+
+export function getFingerprintHistory(limit?: number, offset?: number): Promise<PaginatedResponse<FingerprintHistoryItem>> {
+  const params = new URLSearchParams()
+  if (limit) params.set('limit', String(limit))
+  if (offset) params.set('offset', String(offset))
+  const qs = params.toString()
+  return request<PaginatedResponse<FingerprintHistoryItem>>(`/fingerprint/history${qs ? `?${qs}` : ''}`)
+}
+
+export function rollbackFingerprint(id: number): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/fingerprint/rollback/${id}`, { method: 'POST' })
+}
+
+export function postFingerprintRun(dry_run: boolean = false): Promise<{ ok: boolean; dry_run: boolean }> {
+  return request<{ ok: boolean; dry_run: boolean }>(`/fingerprint/run?dry_run=${dry_run}`, { method: 'POST' })
+}
+
+export function stopFingerprintEngine(): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>('/fingerprint/stop', { method: 'POST' })
+}
+
+export function getMbStatus(): Promise<{ available: boolean; type: string }> {
+  return request<{ available: boolean; type: string }>('/fingerprint/mb-status')
 }

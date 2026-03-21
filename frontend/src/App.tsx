@@ -13,6 +13,10 @@ const Settings = lazy(() => import('./pages/Settings'))
 const Duplicates = lazy(() => import('./pages/Duplicates'))
 const Trash = lazy(() => import('./pages/Trash'))
 const Player = lazy(() => import('./pages/Player'))
+const FingerprintDashboard = lazy(() => import('./pages/Fingerprint'))
+const FingerprintReview = lazy(() => import('./pages/FingerprintReview'))
+const FingerprintUnmatched = lazy(() => import('./pages/FingerprintUnmatched'))
+const FingerprintHistory = lazy(() => import('./pages/FingerprintHistory'))
 
 function PageFallback() {
   return (
@@ -71,6 +75,10 @@ export default function App() {
                     <Route path="/settings" element={<Settings />} />
                     <Route path="/duplicates" element={<Duplicates />} />
                     <Route path="/trash" element={<Trash />} />
+                    <Route path="/fingerprint" element={<FingerprintDashboard />} />
+                    <Route path="/fingerprint/review" element={<FingerprintReview />} />
+                    <Route path="/fingerprint/unmatched" element={<FingerprintUnmatched />} />
+                    <Route path="/fingerprint/history" element={<FingerprintHistory />} />
                   </Routes>
                 </Suspense>
               </main>

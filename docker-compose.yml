@@ -18,7 +18,12 @@ services:
       - MUSICGRABBER_URL=http://10.0.0.75:38274
       - PLEX_URL=${PLEX_URL:-http://10.0.0.13:32400}
       - PLEX_TOKEN=${PLEX_TOKEN}
+      - AUDD_API_KEY=0b109e9c1fef8b670abdd86dd24d3c7d
+      - MB_DB_URI=postgresql://musicbrainz:musicbrainz@musicbrainz-db:5432/musicbrainz
     restart: unless-stopped
+    depends_on:
+      musicbrainz-db:
+        condition: service_started
 
   sonic-analyzer:
     build:
@@ -36,5 +41,18 @@ services:
     depends_on:
       - music-machine
 
+  musicbrainz-db:
+    image: postgres:16-alpine
+    container_name: musicbrainz-db
+    volumes:
+      - musicbrainz-data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=musicbrainz
+      - POSTGRES_USER=musicbrainz
+      - POSTGRES_PASSWORD=musicbrainz
+    restart: unless-stopped
+    shm_size: 256mb
+
 volumes:
   essentia-models:
+  musicbrainz-data:

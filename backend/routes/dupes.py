@@ -79,20 +79,33 @@ def _resolve_group_internal(group_id: int, keep_track_id: int) -> int:
 
 @router.get("")
 @router.get("/")
-def list_dupes():
+def list_dupes(resolved: Optional[bool] = Query(None)):
     """
-    Return all dupe groups with full track info.
+    Return dupe groups with full track info.
+    Optional ?resolved=true/false filter. Returns all if omitted.
     Each group includes tracks sorted by quality_score desc, with is_winner flag.
     """
     with get_db() as db:
-        groups = db.execute(
-            """SELECT dg.id, dg.match_type, dg.confidence, dg.resolved, dg.kept_track_id,
-                      GROUP_CONCAT(dgm.track_id) as member_ids
-               FROM dupe_groups dg
-               JOIN dupe_group_members dgm ON dg.id = dgm.group_id
-               GROUP BY dg.id
-               ORDER BY dg.resolved ASC, dg.confidence DESC"""
-        ).fetchall()
+        if resolved is None:
+            groups = db.execute(
+                """SELECT dg.id, dg.match_type, dg.confidence, dg.resolved, dg.kept_track_id,
+                          GROUP_CONCAT(dgm.track_id) as member_ids
+                   FROM dupe_groups dg
+                   JOIN dupe_group_members dgm ON dg.id = dgm.group_id
+                   GROUP BY dg.id
+                   ORDER BY dg.resolved ASC, dg.confidence DESC"""
+            ).fetchall()
+        else:
+            groups = db.execute(
+                """SELECT dg.id, dg.match_type, dg.confidence, dg.resolved, dg.kept_track_id,
+                          GROUP_CONCAT(dgm.track_id) as member_ids
+                   FROM dupe_groups dg
+                   JOIN dupe_group_members dgm ON dg.id = dgm.group_id
+                   WHERE dg.resolved = ?
+                   GROUP BY dg.id
+                   ORDER BY dg.confidence DESC""",
+                (1 if resolved else 0,),
+            ).fetchall()
 
         result = []
         for g in groups:
