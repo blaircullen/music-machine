@@ -185,6 +185,13 @@ def run_full_audit(dry_run: bool = False):
                 return (tid, fp, dur_row["duration"] if dur_row else 0)
             try:
                 fp, dur = generate_fingerprint_with_duration(track["file_path"])
+                if fp:
+                    # Persist to DB so restarts skip fpcalc for already-processed tracks
+                    with get_db() as db:
+                        db.execute(
+                            "UPDATE tracks SET fingerprint=?, duration=COALESCE(?, duration) WHERE id=?",
+                            (fp, dur, tid),
+                        )
                 return (tid, fp, dur)
             except Exception as e:
                 logger.warning(f"fpcalc failed for {track['file_path']}: {e}")
