@@ -4,6 +4,9 @@ scoring, tag backup, and state machine.
 
 Orchestrates: fpcalc → AcoustID → local MusicBrainz mirror → AudD fallback →
 disambiguation → confidence scoring → tag write → Plex refresh.
+
+Hardened 2026-03-24: watchdog heartbeat, capped concurrency, auto-recovery,
+progress logging, simplified rate limiter.
 """
 
 import json
@@ -24,13 +27,21 @@ from disambiguator import select_best_release, build_dir_lock
 
 logger = logging.getLogger(__name__)
 
-CONCURRENCY = 12  # NFS-validated sweet spot from sonic analyzer work
 AIR_CHECK_SKIP = "Unknown Artist/Unknown Album"
+
+# Hard cap on concurrency — DB setting cannot exceed this
+MAX_PHASE_A_WORKERS = 3
+MAX_PHASE_B_WORKERS = 3
+ACOUSTID_RATE_LIMIT = 3  # requests/sec
+
+# AcoustID rate limiter: simple lock + timestamp approach (no daemon threads)
+_acoustid_lock = threading.Lock()
+_acoustid_timestamps: list[float] = []
 
 # Status tracking for the fingerprint engine
 fp_status = {
     "running": False,
-    "phase": "idle",       # idle, scanning, pass1, pass2, writing, refreshing, complete, failed
+    "phase": "idle",
     "processed": 0,
     "total": 0,
     "matched": 0,
@@ -42,17 +53,57 @@ fp_status = {
     "started_at": None,
     "current_file": None,
     "dry_run": False,
+    "heartbeat": None,       # Last time the engine did useful work
+    "phase_a_cached": 0,     # Fingerprints cached in Phase A
+    "phase_b_dirs_done": 0,  # Directories completed in Phase B
+    "phase_b_dirs_total": 0, # Total directories in Phase B
 }
 
 _fp_lock = threading.Lock()
 _fp_stop = threading.Event()
+_engine_thread: threading.Thread | None = None
+
+
+def _fp_inc(key: str, delta: int = 1):
+    """Thread-safe increment of fp_status counter."""
+    with _fp_lock:
+        fp_status[key] = fp_status.get(key, 0) + delta
+
+
+def _heartbeat():
+    """Update heartbeat timestamp — called periodically during processing."""
+    fp_status["heartbeat"] = time.time()
 
 
 def get_status() -> dict:
-    """Return current fingerprint engine status."""
+    """Return current fingerprint engine status with liveness check."""
+    global _engine_thread
     s = dict(fp_status)
     if s.get("started_at"):
         s["elapsed_s"] = int(time.time() - s["started_at"])
+
+    # Liveness check: if status says running but thread is dead, auto-recover
+    if s["running"] and _engine_thread is not None and not _engine_thread.is_alive():
+        logger.error("Engine thread died — auto-recovering status")
+        fp_status["running"] = False
+        fp_status["phase"] = "crashed"
+        s["running"] = False
+        s["phase"] = "crashed"
+        # Release the lock if held
+        try:
+            _fp_lock.release()
+        except RuntimeError:
+            pass  # Lock wasn't held
+        _engine_thread = None
+
+    # Stale heartbeat check: if running but no heartbeat in 10 min, mark stalled
+    if s["running"] and s.get("heartbeat"):
+        stale_seconds = time.time() - s["heartbeat"]
+        s["heartbeat_age_s"] = int(stale_seconds)
+        if stale_seconds > 600:
+            s["stalled"] = True
+            logger.warning(f"Engine heartbeat stale for {int(stale_seconds)}s")
+
     return s
 
 
@@ -70,6 +121,7 @@ def run_full_audit(dry_run: bool = False):
     try:
         _fp_stop.clear()
         _reset_status(dry_run)
+        _heartbeat()
 
         # Clean up stale fingerprinting rows (previous crash)
         _cleanup_stale_rows()
@@ -100,11 +152,101 @@ def run_full_audit(dry_run: bool = False):
         # Group by directory for album-level locking
         dir_groups = _group_by_directory(tracks)
 
-        # Process in parallel by directory
-        for dir_path, dir_tracks in dir_groups.items():
+        all_tracks = []
+        for dir_tracks in dir_groups.values():
+            all_tracks.extend(dir_tracks)
+
+        # === Phase A: Batch fpcalc (CPU-bound) ===
+        workers_a = min(MAX_PHASE_A_WORKERS, len(all_tracks))
+        logger.info(f"Phase A: Pre-generating fingerprints for {len(all_tracks)} tracks with {workers_a} workers")
+        fp_cache = {}
+        phase_a_done = 0
+
+        def _gen_fp(track):
+            """Generate fingerprint in worker thread."""
             if _fp_stop.is_set():
-                break
-            _process_directory(dir_path, dir_tracks, dry_run)
+                return None
+            tid = track["id"]
+            fp = track.get("fingerprint")
+            if fp:
+                with get_db() as db:
+                    dur_row = db.execute("SELECT duration FROM tracks WHERE id=?", (tid,)).fetchone()
+                return (tid, fp, dur_row["duration"] if dur_row else 0)
+            try:
+                fp, dur = generate_fingerprint_with_duration(track["file_path"])
+                return (tid, fp, dur)
+            except Exception as e:
+                logger.warning(f"fpcalc failed for {track['file_path']}: {e}")
+                return (tid, None, None)
+
+        with ThreadPoolExecutor(max_workers=workers_a) as executor:
+            for result in executor.map(_gen_fp, all_tracks):
+                if result is None or _fp_stop.is_set():
+                    continue
+                tid, fp, dur = result
+                if fp:
+                    fp_cache[tid] = (fp, dur)
+                phase_a_done += 1
+                _heartbeat()
+                if phase_a_done % 500 == 0:
+                    logger.info(f"Phase A progress: {phase_a_done}/{len(all_tracks)} fingerprinted ({len(fp_cache)} cached)")
+
+        fp_status["phase_a_cached"] = len(fp_cache)
+        logger.info(f"Phase A complete: {len(fp_cache)} fingerprints cached out of {len(all_tracks)}")
+
+        if _fp_stop.is_set():
+            fp_status["phase"] = "stopped"
+            logger.info("Engine stopped during Phase A")
+            return
+
+        # Inject cached fingerprints
+        for track in all_tracks:
+            if track["id"] in fp_cache:
+                fp, dur = fp_cache[track["id"]]
+                track["fingerprint"] = fp
+                track["_cached_duration"] = dur
+
+        # === Phase B: Process directories (network-bound) ===
+        # Hard cap concurrency — ignore DB setting if it exceeds MAX
+        db_concurrency = int(_get_setting("fp_concurrency", MAX_PHASE_B_WORKERS))
+        concurrency = min(db_concurrency, MAX_PHASE_B_WORKERS)
+        fp_status["phase_b_dirs_total"] = len(dir_groups)
+        fp_status["phase"] = "pass1"
+        logger.info(f"Phase B: Processing {len(dir_groups)} directories with {concurrency} workers (db setting was {db_concurrency}, capped at {MAX_PHASE_B_WORKERS})")
+
+        dirs_done = 0
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = {}
+            for dir_path, dir_tracks in dir_groups.items():
+                if _fp_stop.is_set():
+                    break
+                fut = executor.submit(_process_directory, dir_path, dir_tracks, dry_run)
+                futures[fut] = dir_path
+
+            for fut in as_completed(futures):
+                if _fp_stop.is_set():
+                    for f in futures:
+                        f.cancel()
+                    break
+                try:
+                    fut.result()
+                except Exception as e:
+                    logger.error(f"Directory {futures[fut]} failed: {e}", exc_info=True)
+                dirs_done += 1
+                fp_status["phase_b_dirs_done"] = dirs_done
+                _heartbeat()
+                if dirs_done % 100 == 0:
+                    logger.info(
+                        f"Phase B progress: {dirs_done}/{len(dir_groups)} dirs, "
+                        f"processed={fp_status['processed']}, matched={fp_status['matched']}, "
+                        f"failed={fp_status['failed']}"
+                    )
+
+        logger.info(
+            f"Phase B complete: {dirs_done}/{len(dir_groups)} dirs processed, "
+            f"matched={fp_status['matched']}, flagged={fp_status['flagged']}, "
+            f"unmatched={fp_status['unmatched']}, failed={fp_status['failed']}"
+        )
 
         # Pass 2: AudD for unmatched tracks
         if not _fp_stop.is_set() and not dry_run:
@@ -116,10 +258,9 @@ def run_full_audit(dry_run: bool = False):
 
         fp_status["phase"] = "stopped" if _fp_stop.is_set() else "complete"
         logger.info(
-            f"Fingerprint audit complete: matched={fp_status['matched']}, "
-            f"auto_approved={fp_status['auto_approved']}, "
-            f"flagged={fp_status['flagged']}, "
-            f"unmatched={fp_status['unmatched']}, "
+            f"Fingerprint audit {'stopped' if _fp_stop.is_set() else 'complete'}: "
+            f"matched={fp_status['matched']}, auto_approved={fp_status['auto_approved']}, "
+            f"flagged={fp_status['flagged']}, unmatched={fp_status['unmatched']}, "
             f"failed={fp_status['failed']}"
         )
 
@@ -128,7 +269,11 @@ def run_full_audit(dry_run: bool = False):
         fp_status["phase"] = "failed"
     finally:
         fp_status["running"] = False
-        _fp_lock.release()
+        fp_status["heartbeat"] = None
+        try:
+            _fp_lock.release()
+        except RuntimeError:
+            pass
 
 
 def run_incremental():
@@ -151,6 +296,10 @@ def _reset_status(dry_run: bool):
         "started_at": time.time(),
         "current_file": None,
         "dry_run": dry_run,
+        "heartbeat": time.time(),
+        "phase_a_cached": 0,
+        "phase_b_dirs_done": 0,
+        "phase_b_dirs_total": 0,
     })
 
 
@@ -158,7 +307,11 @@ def _cleanup_stale_rows():
     """Mark stale 'fingerprinting' rows as failed (previous crash)."""
     try:
         with get_db() as db:
-            stale_threshold = time.time() - 3600  # 1 hour
+            count = db.execute(
+                "SELECT COUNT(*) FROM fingerprint_results WHERE status='fingerprinting'"
+            ).fetchone()[0]
+            if count > 0:
+                logger.info(f"Cleaning up {count} stale 'fingerprinting' rows from previous crash")
             db.execute(
                 "UPDATE fingerprint_results SET status='failed', "
                 "error_message='Orphaned: engine restarted', "
@@ -188,8 +341,14 @@ def _process_directory(dir_path: str, tracks: list[dict], dry_run: bool):
             return
 
         fp_status["current_file"] = track["file_path"]
-        result = _process_track(track, dry_run, dir_lock)
-        fp_status["processed"] += 1
+        try:
+            result = _process_track(track, dry_run, dir_lock)
+        except Exception as e:
+            logger.error(f"Unexpected error processing {track['file_path']}: {e}", exc_info=True)
+            result = {"track_id": track["id"], "status": "failed"}
+            _fp_inc("failed")
+        _fp_inc("processed")
+        _heartbeat()
         dir_results.append(result)
 
         # Update dir lock after each result
@@ -216,11 +375,10 @@ def _process_track(track: dict, dry_run: bool, dir_lock: dict | None) -> dict:
     # Create initial fingerprint_results row
     fp_result_id = _create_fp_result(track_id)
     if not fp_result_id:
-        fp_status["failed"] += 1
+        _fp_inc("failed")
         return {"track_id": track_id, "status": "failed"}
 
     try:
-        # Update status
         _update_fp_status(fp_result_id, "fingerprinting")
 
         # Step 1: Generate fingerprint (reuse existing if available)
@@ -231,7 +389,7 @@ def _process_track(track: dict, dry_run: bool, dir_lock: dict | None) -> dict:
             fingerprint, duration = generate_fingerprint_with_duration(file_path)
             if not fingerprint:
                 _update_fp_status(fp_result_id, "failed", error="Could not generate fingerprint")
-                fp_status["failed"] += 1
+                _fp_inc("failed")
                 return {"track_id": track_id, "status": "failed"}
 
         # Store chromaprint
@@ -243,18 +401,19 @@ def _process_track(track: dict, dry_run: bool, dir_lock: dict | None) -> dict:
 
         # Step 2: AcoustID lookup
         if not duration:
-            # Get duration from tracks table or re-derive
+            duration = track.get("_cached_duration")
+        if not duration:
             with get_db() as db:
                 dur_row = db.execute(
                     "SELECT duration FROM tracks WHERE id=?", (track_id,)
                 ).fetchone()
                 duration = dur_row["duration"] if dur_row else 0
 
-        matches = lookup_acoustid(fingerprint, duration or 0)
+        matches = _rate_limited_acoustid(fingerprint, duration or 0)
 
         if not matches:
             _update_fp_status(fp_result_id, "unmatched", error="No AcoustID match")
-            fp_status["unmatched"] += 1
+            _fp_inc("unmatched")
             return {"track_id": track_id, "status": "unmatched"}
 
         best_score = matches[0]["score"]
@@ -265,18 +424,10 @@ def _process_track(track: dict, dry_run: bool, dir_lock: dict | None) -> dict:
 
         if not metadata:
             _update_fp_status(fp_result_id, "unmatched", error="MusicBrainz lookup failed")
-            fp_status["unmatched"] += 1
+            _fp_inc("unmatched")
             return {"track_id": track_id, "status": "unmatched"}
 
-        # Step 4: Disambiguate if multiple candidates
-        # For now, we use the top match; disambiguator refines release selection
-        existing_tags = {
-            "artist": track.get("artist"),
-            "title": track.get("title"),
-            "album": track.get("album"),
-        }
-
-        # Apply dir lock if available
+        # Step 4: Apply dir lock if available
         if dir_lock and metadata.get("release_id") != dir_lock.get("release_id"):
             metadata["album"] = dir_lock.get("album", metadata.get("album", ""))
             metadata["release_id"] = dir_lock.get("release_id", metadata.get("release_id"))
@@ -291,7 +442,6 @@ def _process_track(track: dict, dry_run: bool, dir_lock: dict | None) -> dict:
         confidence = _compute_confidence(best_score, metadata)
 
         # Step 7: Determine action based on confidence
-        # Get confidence threshold from settings
         auto_threshold = _get_setting("fp_auto_threshold", 0.95)
         review_threshold = _get_setting("fp_review_threshold", 0.50)
 
@@ -325,16 +475,15 @@ def _process_track(track: dict, dry_run: bool, dir_lock: dict | None) -> dict:
                 fp_result_id,
             ))
 
-        fp_status["matched"] += 1
+        _fp_inc("matched")
 
         if confidence >= auto_threshold:
-            # Auto-approve: snapshot + write tags (unless dry run)
             if dry_run:
                 _update_fp_status(fp_result_id, "auto_approved")
             else:
                 _auto_fix_track(track_id, file_path, fp_result_id, metadata,
                                 matched_genre, recording_id)
-            fp_status["auto_approved"] += 1
+            _fp_inc("auto_approved")
             return {
                 "track_id": track_id,
                 "status": "auto_approved",
@@ -345,9 +494,8 @@ def _process_track(track: dict, dry_run: bool, dir_lock: dict | None) -> dict:
             }
 
         elif confidence >= review_threshold:
-            # Flag for manual review
             _update_fp_status(fp_result_id, "flagged")
-            fp_status["flagged"] += 1
+            _fp_inc("flagged")
             return {
                 "track_id": track_id,
                 "status": "flagged",
@@ -355,9 +503,8 @@ def _process_track(track: dict, dry_run: bool, dir_lock: dict | None) -> dict:
             }
 
         else:
-            # Low confidence — mark for Pass 2
             _update_fp_status(fp_result_id, "pass2_pending")
-            fp_status["unmatched"] += 1
+            _fp_inc("unmatched")
             return {
                 "track_id": track_id,
                 "status": "pass2_pending",
@@ -366,13 +513,30 @@ def _process_track(track: dict, dry_run: bool, dir_lock: dict | None) -> dict:
 
     except Exception as e:
         logger.error(f"Track {track_id} processing failed: {e}", exc_info=True)
-        _update_fp_status(fp_result_id, "failed", error=str(e))
-        fp_status["failed"] += 1
+        _update_fp_status(fp_result_id, "failed", error=str(e)[:500])
+        _fp_inc("failed")
         return {"track_id": track_id, "status": "failed"}
 
-    finally:
-        # Rate limit between tracks (courtesy delay)
-        time.sleep(0.1)
+
+def _rate_limited_acoustid(fingerprint: str, duration: float) -> list[dict]:
+    """AcoustID lookup with sliding-window rate limiting (~3 req/sec).
+
+    Uses a simple timestamp list instead of spawning daemon threads.
+    """
+    with _acoustid_lock:
+        now = time.time()
+        # Prune timestamps older than 1 second
+        while _acoustid_timestamps and _acoustid_timestamps[0] < now - 1.0:
+            _acoustid_timestamps.pop(0)
+        # If at capacity, wait until the oldest request expires
+        if len(_acoustid_timestamps) >= ACOUSTID_RATE_LIMIT:
+            wait_time = 1.0 - (now - _acoustid_timestamps[0])
+            if wait_time > 0:
+                time.sleep(wait_time)
+            _acoustid_timestamps.pop(0)
+        _acoustid_timestamps.append(time.time())
+
+    return lookup_acoustid(fingerprint, duration)
 
 
 def _get_mb_metadata(recording_id: str) -> dict | None:
@@ -386,11 +550,9 @@ def _get_mb_metadata(recording_id: str) -> dict | None:
     except ImportError:
         pass
 
-    # Fall back to public MusicBrainz API
     from tagger import lookup_musicbrainz
     metadata = lookup_musicbrainz(recording_id)
     if metadata:
-        # Add missing fields that the public API doesn't return
         metadata.setdefault("album_artist", metadata.get("artist"))
         metadata.setdefault("isrc", None)
         metadata.setdefault("label", None)
@@ -401,14 +563,7 @@ def _get_mb_metadata(recording_id: str) -> dict | None:
 
 
 def _compute_confidence(acoustid_score: float, metadata: dict) -> float:
-    """
-    Normalized 0-1 confidence score.
-
-    Components:
-    - fingerprint_score (0-1): AcoustID score
-    - metadata_completeness (0-1): fraction of target fields present
-    - disambiguation_clarity (0-1): 1.0 if rich metadata
-    """
+    """Normalized 0-1 confidence score."""
     completeness_fields = [
         "artist", "title", "album", "date", "track_number",
         "isrc", "label", "composer",
@@ -416,7 +571,6 @@ def _compute_confidence(acoustid_score: float, metadata: dict) -> float:
     present = sum(1 for f in completeness_fields if metadata.get(f))
     completeness = present / len(completeness_fields)
 
-    # Clarity: penalize if critical fields are missing
     clarity = 1.0
     if not metadata.get("album"):
         clarity -= 0.3
@@ -436,14 +590,12 @@ def _auto_fix_track(
     recording_id: str,
 ):
     """Snapshot existing tags, write new tags, update status."""
-    # Snapshot existing tags
     snap_id = snapshot_tags(track_id, file_path, fp_result_id)
     if snap_id is None:
         logger.warning(f"Snapshot failed for track {track_id}, skipping auto-fix")
         _update_fp_status(fp_result_id, "flagged")
         return
 
-    # Fetch cover art
     art_bytes = None
     art_mime = "image/jpeg"
     rg_id = metadata.get("release_group_id")
@@ -452,7 +604,6 @@ def _auto_fix_track(
     if art_result:
         art_bytes, art_mime = art_result
 
-    # Build tag dict
     tag_data = {
         "artist": metadata.get("artist"),
         "title": metadata.get("title"),
@@ -470,7 +621,6 @@ def _auto_fix_track(
         logger.debug(f"Auto-fixed: {file_path}")
     except Exception as e:
         logger.error(f"Tag write failed for {file_path}: {e}")
-        # Rollback from snapshot
         from tag_backup import rollback_tags
         rollback_tags(snap_id)
         _update_fp_status(fp_result_id, "failed", error=f"Write failed: {e}")
@@ -479,6 +629,7 @@ def _auto_fix_track(
 def _run_pass2():
     """Run AudD fallback for unmatched and low-confidence tracks."""
     fp_status["phase"] = "pass2"
+    _heartbeat()
 
     if not audd_check_budget():
         logger.info("AudD budget exceeded, skipping Pass 2")
@@ -498,7 +649,7 @@ def _run_pass2():
 
     logger.info(f"Pass 2 (AudD): {len(rows)} tracks")
 
-    for row in rows:
+    for i, row in enumerate(rows):
         if _fp_stop.is_set():
             break
         if not audd_check_budget():
@@ -511,15 +662,14 @@ def _run_pass2():
 
         fp_status["current_file"] = file_path
         _update_fp_status(fp_result_id, "pass2_processing")
+        _heartbeat()
 
         audd_result = audd_identify(file_path)
         if not audd_result:
             _update_fp_status(fp_result_id, "unmatched")
             continue
 
-        # Store AudD result
-        audd_score = audd_result.get("audd_score") or 0.8  # Default if not provided
-        genre_tags = []  # AudD doesn't return MB-style genre tags
+        audd_score = audd_result.get("audd_score") or 0.8
         matched_genre = "Other"
 
         with get_db() as db:
@@ -538,7 +688,7 @@ def _run_pass2():
             """, (
                 audd_score,
                 json.dumps(audd_result),
-                audd_score * 0.7 + 0.2,  # Adjusted confidence
+                audd_score * 0.7 + 0.2,
                 audd_result.get("artist"),
                 audd_result.get("title"),
                 audd_result.get("album"),
@@ -552,17 +702,21 @@ def _run_pass2():
                 fp_result_id,
             ))
 
-        fp_status["matched"] += 1
-        fp_status["flagged"] += 1
-        fp_status["unmatched"] = max(0, fp_status["unmatched"] - 1)
+        _fp_inc("matched")
+        _fp_inc("flagged")
+        _fp_inc("unmatched", -1)
+        fp_status["unmatched"] = max(0, fp_status["unmatched"])
 
-        # Rate limit for AudD
+        if (i + 1) % 10 == 0:
+            logger.info(f"Pass 2 progress: {i + 1}/{len(rows)}")
+
         time.sleep(0.5)
 
 
 def _plex_refresh_modified():
     """Batch Plex force-refresh for albums with written tags."""
     fp_status["phase"] = "refreshing"
+    _heartbeat()
 
     plex_url = os.environ.get("PLEX_URL", "http://10.0.0.13:32400")
     plex_token = os.environ.get("PLEX_TOKEN", "")
@@ -570,7 +724,6 @@ def _plex_refresh_modified():
         logger.warning("PLEX_TOKEN not set, skipping refresh")
         return
 
-    # Get unique album directories that were modified
     with get_db() as db:
         rows = db.execute("""
             SELECT DISTINCT t.file_path
@@ -582,8 +735,6 @@ def _plex_refresh_modified():
     if not rows:
         return
 
-    # Get unique album rating keys from Plex
-    # For now, trigger a full music library scan
     try:
         import urllib.request
         url = f"{plex_url}/library/sections/5/refresh?X-Plex-Token={plex_token}"
@@ -591,7 +742,6 @@ def _plex_refresh_modified():
         urllib.request.urlopen(req, timeout=10)
         logger.info("Triggered Plex music library scan")
 
-        # Update status of written tracks
         with get_db() as db:
             db.execute(
                 "UPDATE fingerprint_results SET status='complete', "

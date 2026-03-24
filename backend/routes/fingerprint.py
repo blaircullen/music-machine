@@ -345,9 +345,12 @@ def rollback_multiple(ids: list[int]):
 @router.post("/run")
 async def start_engine(dry_run: bool = False):
     """Trigger a full fingerprint audit."""
-    from fingerprint_engine import fp_status, run_full_audit
+    import fingerprint_engine
+    from fingerprint_engine import run_full_audit, get_status
 
-    if fp_status["running"]:
+    # Liveness check — auto-recovers if thread died but status stuck on running
+    status = get_status()
+    if status["running"]:
         return {"ok": False, "error": "Fingerprint engine already running"}
 
     t = threading.Thread(
@@ -357,6 +360,7 @@ async def start_engine(dry_run: bool = False):
         name="fingerprint-engine",
     )
     t.start()
+    fingerprint_engine._engine_thread = t
     return {"ok": True, "dry_run": dry_run}
 
 
@@ -380,8 +384,31 @@ def stop_engine():
 def get_mb_status():
     """Check MusicBrainz local mirror status."""
     try:
-        from mb_local import is_available
+        from mb_local import is_available, _get_pool
         available = is_available()
-        return {"available": available, "type": "local" if available else "public_api"}
+        record_count = 0
+        if available:
+            pool = _get_pool()
+            if pool:
+                conn = pool.getconn()
+                try:
+                    cur = conn.cursor()
+                    cur.execute("SELECT count(*) FROM musicbrainz.recording")
+                    record_count = cur.fetchone()[0]
+                finally:
+                    pool.putconn(conn)
+        elif _get_pool() is not None:
+            # DB connects but has no data
+            return {
+                "available": False,
+                "type": "public_api",
+                "reason": "Local mirror database is empty — data import required",
+                "record_count": 0,
+            }
+        return {
+            "available": available,
+            "type": "local" if available else "public_api",
+            "record_count": record_count,
+        }
     except ImportError:
-        return {"available": False, "type": "public_api"}
+        return {"available": False, "type": "public_api", "record_count": 0}
