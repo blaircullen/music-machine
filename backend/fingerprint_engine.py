@@ -103,6 +103,17 @@ def get_status() -> dict:
         if stale_seconds > 600:
             s["stalled"] = True
             logger.warning(f"Engine heartbeat stale for {int(stale_seconds)}s")
+        if stale_seconds > 900:
+            # Thread is hung (not dead) — force-reset so a new run can start
+            logger.error(f"Engine stalled {int(stale_seconds)}s with live-but-hung thread — force-resetting")
+            fp_status["running"] = False
+            fp_status["phase"] = "crashed"
+            s["running"] = False
+            s["phase"] = "crashed"
+            try:
+                _fp_lock.release()
+            except RuntimeError:
+                pass
 
     return s
 

@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -30,6 +31,7 @@ ACOUSTID_MIN_SCORE = 0.5
 
 # Set a descriptive user-agent per MusicBrainz API requirements
 musicbrainzngs.set_useragent("MusicMachine-MetaTagger", "1.0", "https://github.com/blaircullen/music-machine")
+socket.setdefaulttimeout(30)  # Prevent musicbrainzngs from hanging indefinitely
 
 
 # ---------------------------------------------------------------------------
@@ -593,7 +595,7 @@ def tag_directory(
 
             yield {"type": "result", "result": result}
 
-            # Rate limit: 1 req/sec between files (MusicBrainz courtesy)
+            # Rate limit: 3 req/sec (AcoustID limit; MB lookups are local now)
             # Skip sleep for files that didn't hit external APIs
             if result["status"] not in ("skipped",):
-                time.sleep(1.0)
+                time.sleep(0.34)
