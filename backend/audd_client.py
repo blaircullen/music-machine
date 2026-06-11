@@ -208,6 +208,16 @@ def identify_track(file_path: str) -> dict | None:
             return None
 
         result = data["result"]
+        # Enterprise endpoint returns a LIST of recognition segments, each
+        # with a "songs" list; the regular endpoint returns a single dict.
+        if isinstance(result, list):
+            first = result[0] if result else None
+            if not isinstance(first, dict):
+                return None
+            songs = first.get("songs")
+            result = songs[0] if songs else first
+        if not isinstance(result, dict):
+            return None
         return _parse_audd_result(result)
 
     except Exception as e:

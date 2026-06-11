@@ -375,6 +375,50 @@ class TestIdentifyTrackUsageBilling:
         assert result is None  # No match
         assert len(record_usage_calls) == 1, "API response must trigger _record_usage() once"
 
+    def test_enterprise_list_result_parsed(self, monkeypatch, tmp_path):
+        """Enterprise endpoint returns result as a LIST of segments with a
+        'songs' list — must be unwrapped, not crash with 'list' has no .get."""
+        import audd_client
+        import urllib.request as urllib_req
+
+        monkeypatch.setattr(audd_client, "_get_api_key", lambda: "test-key")
+        monkeypatch.setattr(audd_client, "check_budget", lambda: True)
+
+        fake_sample = tmp_path / "sample.mp3"
+        fake_sample.write_bytes(b"\xff\xfb" * 100)
+        monkeypatch.setattr(audd_client, "_extract_sample", lambda path: str(fake_sample))
+        monkeypatch.setattr(audd_client, "_record_usage", lambda: None)
+
+        enterprise_response = {
+            "status": "success",
+            "result": [{
+                "offset": "00:00",
+                "songs": [{
+                    "artist": "Gloria Gaynor",
+                    "title": "Reach Out, I'll Be There",
+                    "album": "The Hit Songs",
+                    "isrc": "USPR37300012",
+                    "score": 92,
+                }],
+            }],
+        }
+
+        def _fake_urlopen(req, timeout=None):
+            resp = MagicMock()
+            resp.read.return_value = json.dumps(enterprise_response).encode()
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        monkeypatch.setattr(urllib_req, "urlopen", _fake_urlopen)
+
+        result = audd_client.identify_track(str(fake_sample))
+
+        assert result is not None
+        assert result["artist"] == "Gloria Gaynor"
+        assert result["isrc"] == "USPR37300012"
+        assert result["audd_score"] == 0.92
+
 
 # ---------------------------------------------------------------------------
 # audio_probe tests
