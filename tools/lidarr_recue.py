@@ -10,9 +10,11 @@ import re
 import sqlite3
 import sys
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_DIR = REPO_ROOT / "backend"
@@ -20,19 +22,41 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 import lidarr_client as lc  # noqa: E402
+import recue_fakes  # noqa: E402
 from database import log_recue  # noqa: E402
 
 
 BASE = os.environ.get("LIDARR_URL", "http://10.0.0.13:8787")
 API_KEY = os.environ.get("LIDARR_API_KEY", "2cecee10715a4c1dbe8daa16226f7ed7")
+MUSICGRABBER_URL = os.environ.get("MUSICGRABBER_URL", "http://10.0.0.13:38274")
 DB_PATH = Path(os.environ.get("DB_PATH", "/data/music-machine.db"))
 if not DB_PATH.exists() and (REPO_ROOT / "data/music-machine.db").exists():
     DB_PATH = REPO_ROOT / "data/music-machine.db"
 DATA_DIR = REPO_ROOT / "data"
 MANIFEST_PATH = DATA_DIR / "fake-flac-trash-manifest-20260611.json"
 STATE_PATH = DATA_DIR / "lidarr_recue_state.jsonl"
+RECUE_STATE_PATH = DATA_DIR / "recue_state.jsonl"
+CONTAINER_MUSIC_PREFIX = "/music"
+HOST_MUSIC_PREFIX = os.environ.get("HOST_MUSIC_PREFIX", "/mnt/nas/music")
+MUSIC_ROOT = Path("/mnt/nas/music")
 
 COMMANDS_PER_MINUTE = 3
+MG_TRACK_SLEEP_SECONDS = 1.5
+
+
+def configure_recue_fakes() -> None:
+    recue_fakes.BASE = MUSICGRABBER_URL
+    recue_fakes.MUSIC_ROOT = MUSIC_ROOT
+    recue_fakes.SINGLES_DIR = MUSIC_ROOT / "Singles"
+    recue_fakes.REJECT_DIR = MUSIC_ROOT / ".recue-rejected"
+    recue_fakes.STAGING_DIR = MUSIC_ROOT / ".recue-staging"
+    recue_fakes.STATE_FILE = RECUE_STATE_PATH
+
+
+def to_host_path(p: str) -> str:
+    if p.startswith(CONTAINER_MUSIC_PREFIX):
+        return HOST_MUSIC_PREFIX + p[len(CONTAINER_MUSIC_PREFIX) :]
+    return p
 
 
 def normalize(value: str) -> str:
@@ -93,15 +117,17 @@ def load_transcodes() -> list[dict[str, Any]]:
 
     work: list[dict[str, Any]] = []
     for row in rows:
-        file_path = str(row["file_path"] or "")
-        manifest_row = manifest.get(file_path) or {}
+        db_file_path = str(row["file_path"] or "")
+        host_path = to_host_path(db_file_path)
+        manifest_row = manifest.get(host_path) or {}
         work.append(
             {
                 "track_id": int(row["track_id"]),
                 "artist": str(row["artist"] or manifest_row.get("artist") or ""),
                 "album": str(row["album"] or manifest_row.get("album") or ""),
                 "title": str(row["title"] or manifest_row.get("title") or ""),
-                "file_path": file_path,
+                "file_path": db_file_path,
+                "host_path": host_path,
                 "trash_path": str(manifest_row.get("trash") or ""),
             }
         )
@@ -171,6 +197,73 @@ def enqueue_lidarr_rechecks(tracks: list[dict[str, Any]]) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def mg_summary_key(status: str) -> str:
+    if status in {"placed", "already_present"}:
+        return "mg_placed"
+    if status == "staged":
+        return "mg_staged"
+    if status == "mg_source_missing":
+        return "mg_source_missing"
+    return "mg_failed"
+
+
+def mg_log_status(status: str) -> str:
+    if status in {"placed", "already_present"}:
+        return "fixed"
+    if status == "staged":
+        return "staged"
+    return "failed"
+
+
+def mg_fallback_album(tracks: list[dict[str, Any]]) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    total = len(tracks)
+    with httpx.Client(timeout=60.0) as client:
+        for index, track in enumerate(tracks, start=1):
+            target_text = str(track.get("host_path") or "")
+            target = Path(target_text) if target_text else None
+            trash_text = str(track.get("trash_path") or "")
+            trash = Path(trash_text) if trash_text else None
+            source = trash if trash is not None and trash.exists() else target
+
+            if source is None or not source.exists() or target is None:
+                status = "mg_source_missing"
+                quality = ""
+                query = ""
+                if target_text:
+                    recue_fakes.append_state(target_text, status, quality, query)
+                print(f"  MG {index}/{total}: {status} target={target}", flush=True)
+            else:
+                row = {"which": "borderline", "source": str(source), "target": str(target)}
+                try:
+                    result = recue_fakes.process_track(client, row, dry_run=False)
+                except Exception as exc:
+                    result = {"target": str(target), "status": f"error:{exc}", "quality": "", "query": ""}
+
+                status = result.get("status") or "error:missing_status"
+                quality = result.get("quality") or ""
+                query = result.get("query") or ""
+                recue_fakes.append_state(result.get("target") or str(target), status, quality, query)
+                print(
+                    f"  MG {index}/{total}: {status} quality={quality or '-'} source={source} target={target}",
+                    flush=True,
+                )
+
+            log_recue(
+                DB_PATH,
+                int(track["track_id"]),
+                "musicgrabber",
+                mg_log_status(status),
+                str(track.get("album") or ""),
+                str(track.get("title") or ""),
+            )
+            counts[mg_summary_key(status)] += 1
+
+            if index < total:
+                time.sleep(MG_TRACK_SLEEP_SECONDS)
+    return counts
 
 
 def trackfile_title(trackfile: dict[str, Any]) -> str:
@@ -276,6 +369,7 @@ def main() -> int:
         args.dry_run = False
 
     lc.DRY_RUN = args.dry_run
+    configure_recue_fakes()
     print(f"mode={'DRY-RUN' if args.dry_run else 'EXECUTE'} base={BASE} db={DB_PATH}", flush=True)
 
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
@@ -294,14 +388,23 @@ def main() -> int:
     counts: dict[str, int] = defaultdict(int)
     for key, tracks in items:
         key_value = "|".join(key)
+        details: dict[str, Any] | None = None
         try:
             status = process_album(key_value, tracks, args, command_times)
+            if status == "lidarr_no_album":
+                if args.dry_run:
+                    print(f"  would MG-fallback {len(tracks)} track(s)", flush=True)
+                else:
+                    mg_counts = mg_fallback_album(tracks)
+                    details = {"musicgrabber": dict(sorted(mg_counts.items()))}
+                    for mg_status, mg_count in mg_counts.items():
+                        counts[mg_status] += mg_count
         except Exception as exc:
             status = f"error:{exc}"
             print(f"  {status}", flush=True)
         counts[status] += 1
         if not args.dry_run:
-            append_state(key_value, str(tracks[0].get("artist") or ""), str(tracks[0].get("album") or ""), status)
+            append_state(key_value, str(tracks[0].get("artist") or ""), str(tracks[0].get("album") or ""), status, details)
 
     print(f"\nsummary: {dict(sorted(counts.items()))}", flush=True)
     return 0
