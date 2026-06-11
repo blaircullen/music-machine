@@ -539,3 +539,86 @@ export function stopFingerprintEngine(): Promise<{ ok: boolean }> {
 export function getMbStatus(): Promise<{ available: boolean; type: string }> {
   return request<{ available: boolean; type: string }>('/fingerprint/mb-status')
 }
+
+// --- Identity resolver (U5/U6) ---
+
+export interface IdentitySweepStatus {
+  running: boolean
+  started_at: string | null
+  stopped_at: string | null
+  stopped_reason: string | null
+  total: number
+  processed: number
+  confirmed: number
+  review: number
+  unknown: number
+  conflict: number
+  deferred: number
+  error: number
+  audd_escalated: number
+  last_heartbeat: string | null
+  current_file: string | null
+}
+
+export interface IdentityReport {
+  resolver_version: string
+  total_active: number
+  total_resolved: number
+  unresolved: number
+  by_state: Record<string, number>
+  by_tier: Record<string, number>
+  divergent: number
+}
+
+export interface IdentityTrackItem {
+  track_id: number
+  state: string
+  mb_recording_id: string | null
+  mb_release_id: string | null
+  isrc: string | null
+  artist: string | null
+  title: string | null
+  album: string | null
+  date: string | null
+  track_no: number | null
+  tier: string | null
+  evidence: string
+  divergent: number
+  decided_at: string
+  resolver_version: string
+  file_path: string
+  format: string
+  bitrate: number
+  tag_artist: string | null
+  tag_title: string | null
+  tag_album: string | null
+}
+
+export type IdentityBucket =
+  | 'confirmed' | 'review' | 'conflict' | 'unknown' | 'deferred' | 'error' | 'divergent'
+
+export function getIdentityReport(): Promise<IdentityReport> {
+  return request<IdentityReport>('/identity/report')
+}
+
+export function getIdentitySweepStatus(): Promise<IdentitySweepStatus> {
+  return request<IdentitySweepStatus>('/identity/sweep/status')
+}
+
+export function startIdentitySweep(dry_run: boolean = false): Promise<{ ok: boolean; error?: string }> {
+  return request<{ ok: boolean; error?: string }>(`/identity/sweep/start?dry_run=${dry_run}`, { method: 'POST' })
+}
+
+export function stopIdentitySweep(): Promise<{ ok: boolean; error?: string }> {
+  return request<{ ok: boolean; error?: string }>('/identity/sweep/stop', { method: 'POST' })
+}
+
+export function getIdentityTracks(
+  bucket: IdentityBucket,
+  limit: number = 100,
+  offset: number = 0,
+): Promise<PaginatedResponse<IdentityTrackItem>> {
+  return request<PaginatedResponse<IdentityTrackItem>>(
+    `/identity/tracks/${bucket}?limit=${limit}&offset=${offset}`,
+  )
+}
