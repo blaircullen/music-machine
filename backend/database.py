@@ -321,6 +321,7 @@ def init_db():
             ("fp_auto_threshold", "0.95"),
             ("fp_review_threshold", "0.50"),
             ("fp_concurrency", "12"),
+            ("identity_act_enabled", "false"),
         ]
         for key, value in defaults:
             db.execute(
@@ -333,6 +334,7 @@ def init_db():
         _migrate_authenticity_queue(db)
         _migrate_track_authenticity(db)
         _migrate_recue_log(db)
+        _migrate_freeze_upgrade_queue(db)
 
         # Seed genre normalization map
         try:
@@ -418,6 +420,47 @@ def _migrate_recue_log(db):
         """
     )
     db.execute("CREATE INDEX IF NOT EXISTS idx_recue_log_status ON recue_log(status)")
+
+
+def _migrate_freeze_upgrade_queue(db):
+    """
+    Park all non-terminal upgrade_queue rows to 'frozen' status.
+
+    Runs at startup inside init_db() before any worker threads start.
+    Idempotent: guarded by 'freeze_migration_version' = '1' in settings.
+    Non-terminal statuses: pending, searching, found, approved, downloading.
+    Terminal statuses untouched: completed, failed, skipped, frozen.
+    """
+    row = db.execute(
+        "SELECT value FROM settings WHERE key = 'freeze_migration_version'"
+    ).fetchone()
+    if row and row[0] == "1":
+        return  # Already applied
+
+    db.execute(
+        """UPDATE upgrade_queue
+           SET status = 'frozen', updated_at = CURRENT_TIMESTAMP
+           WHERE status NOT IN ('completed', 'failed', 'skipped', 'frozen')"""
+    )
+    db.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('freeze_migration_version', '1')"
+    )
+
+
+def identity_act_enabled() -> bool:
+    """Return True only when the identity_act_enabled setting is explicitly 'true'.
+
+    Reads fresh from DB on every call (no module-level cache).
+    Fails closed: any error or unexpected value returns False.
+    """
+    try:
+        with get_db() as db:
+            row = db.execute(
+                "SELECT value FROM settings WHERE key = 'identity_act_enabled'"
+            ).fetchone()
+        return row is not None and row[0] == "true"
+    except Exception:
+        return False
 
 
 def log_recue(

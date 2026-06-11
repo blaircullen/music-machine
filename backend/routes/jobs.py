@@ -65,6 +65,9 @@ def retry_job(job_id: int):
         return {"ok": True, "job_type": job_type, "action": "search worker started"}
 
     elif job_type == "upgrade_download":
+        from database import identity_act_enabled
+        if not identity_act_enabled():
+            raise HTTPException(status_code=403, detail="identity_act_enabled is false")
         # Re-queue approved items that failed
         with get_db() as db:
             db.execute(

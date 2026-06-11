@@ -856,6 +856,9 @@ def retry_failed():
 @router.post("/approve-hi-res")
 def approve_hi_res_upgrades():
     """Approve only hi-res quality found items."""
+    from database import identity_act_enabled
+    if not identity_act_enabled():
+        raise HTTPException(status_code=403, detail="identity_act_enabled is false")
     with get_db() as db:
         result = db.execute(
             """UPDATE upgrade_queue
@@ -871,6 +874,9 @@ def approve_hi_res_upgrades():
 @router.post("/{item_id}/approve")
 def approve_upgrade(item_id: int):
     """Mark an upgrade queue item as approved for download."""
+    from database import identity_act_enabled
+    if not identity_act_enabled():
+        raise HTTPException(status_code=403, detail="identity_act_enabled is false")
     with get_db() as db:
         row = db.execute(
             "SELECT id, status, mg_track_id FROM upgrade_queue WHERE id = ?",
@@ -898,6 +904,9 @@ def approve_upgrade(item_id: int):
 @router.post("/approve-all")
 def approve_all_upgrades():
     """Approve all upgrade items with status='found'."""
+    from database import identity_act_enabled
+    if not identity_act_enabled():
+        raise HTTPException(status_code=403, detail="identity_act_enabled is false")
     with get_db() as db:
         result = db.execute(
             """UPDATE upgrade_queue
@@ -911,6 +920,9 @@ def approve_all_upgrades():
 @router.post("/download")
 def start_download():
     """Start downloading all approved upgrade items."""
+    from database import identity_act_enabled
+    if not identity_act_enabled():
+        raise HTTPException(status_code=403, detail="identity_act_enabled is false")
     if not _download_lock.acquire(blocking=False):
         return {"ok": False, "error": "A download is already running"}
     _download_lock.release()

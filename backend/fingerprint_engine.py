@@ -125,6 +125,11 @@ def stop():
 
 def run_full_audit(dry_run: bool = False):
     """Process all unprocessed tracks. Main entry point."""
+    from database import identity_act_enabled
+    if not identity_act_enabled():
+        logger.info("Fingerprint audit refused — identity_act_enabled is false")
+        return
+
     if not _fp_lock.acquire(blocking=False):
         logger.warning("Fingerprint engine already running")
         return
@@ -608,6 +613,14 @@ def _auto_fix_track(
     recording_id: str,
 ):
     """Snapshot existing tags, write new tags, update status."""
+    from database import identity_act_enabled
+    if not identity_act_enabled():
+        logger.info(
+            f"Auto-fix skipped for track {track_id} — identity_act_enabled is false"
+        )
+        _update_fp_status(fp_result_id, "flagged")
+        return
+
     snap_id = snapshot_tags(track_id, file_path, fp_result_id)
     if snap_id is None:
         logger.warning(f"Snapshot failed for track {track_id}, skipping auto-fix")

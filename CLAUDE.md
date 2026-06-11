@@ -86,6 +86,18 @@ If a BackgroundTask completes faster than the polling interval (2s), the fronten
 
 `docker cp` updates .py files but Python's `sys.modules` cache holds old bytecode. Changes only take effect after `docker restart`. Hot-patching only works for files loaded fresh per-request.
 
+### Migrations on `docker restart` — verify they applied
+
+`init_db()` IS called unconditionally in the FastAPI lifespan (`backend/main.py` ~line 145) on every container start — `CREATE TABLE IF NOT EXISTS` blocks and `_migrate_*` fns wired into `init_db()` apply on restart (verified 2026-06-11). The historical gotcha: a `_migrate_*` fn that exists in the `docker cp`-ed `database.py` but is NOT yet called from `init_db()` never runs. If a migration didn't apply, either wire it into `init_db()` + restart, or apply manually:
+```bash
+docker exec music-machine python3 -c "import database, sqlite3; db=sqlite3.connect('/data/music-machine.db', timeout=30); database._migrate_<name>(db); db.commit()"
+```
+The migration fn stays in `database.py` for the next fresh-DB `init_db()`. Verify with `PRAGMA table_info(<table>)` before relying on the columns — a missing column makes `INSERT OR REPLACE` throw `no column named X`.
+
+### rsync Multi-Source Flattens
+
+`rsync a/x.py b/routes/y.py dest/` puts BOTH files directly in `dest/` — it does NOT preserve `routes/`. Deploying backend files: rsync each subdir separately (`rsync backend/routes/*.py olares@…:~/projects/music-machine/backend/routes/`), or the routes files land in `backend/` and the running tsc/import breaks. Verify placement on the remote after.
+
 ### User Preference
 
 No automated file actions — user wants to review all duplicate resolutions manually.

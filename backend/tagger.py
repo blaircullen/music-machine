@@ -262,6 +262,10 @@ def write_metadata(
     Write metadata tags to an audio file using mutagen.
     Returns (sha256_before, sha256_after).
     """
+    from database import identity_act_enabled
+    if not identity_act_enabled():
+        raise ValueError("identity_act_enabled is false")
+
     sha256_before = _compute_sha256(file_path)
 
     audio = MutagenFile(file_path)

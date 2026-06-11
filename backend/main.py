@@ -64,6 +64,11 @@ def _scheduled_playlist_sync_loop():
         )
         time.sleep(wait_seconds)
 
+        from database import identity_act_enabled
+        if not identity_act_enabled():
+            logger.info("Scheduled playlist sync skipped — identity_act_enabled is false")
+            continue
+
         logger.info("Starting scheduled playlist sync (2 AM daily)")
         try:
             _run_sync()
@@ -93,6 +98,11 @@ def _scheduled_fingerprint_loop():
             f"Next fingerprint batch at {target.isoformat()}, sleeping {wait_seconds:.0f}s"
         )
         time.sleep(wait_seconds)
+
+        from database import identity_act_enabled
+        if not identity_act_enabled():
+            logger.info("Scheduled fingerprint batch skipped — identity_act_enabled is false")
+            continue
 
         if fp_status["running"]:
             logger.info("Fingerprint batch skipped — already in progress")
