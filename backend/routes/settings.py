@@ -15,6 +15,8 @@ ALLOWED_KEYS = {
     "upgrade_scan_limit",
     "upgrade_concurrency",
     "lastfm_api_key",
+    "auto_recue_new_imports",
+    "auto_recue_daily_cap",
 }
 
 # Read-only environment-derived values surfaced in GET response
@@ -30,6 +32,8 @@ DEFAULTS = {
     "upgrade_scan_limit": "0",
     "upgrade_concurrency": "8",
     "lastfm_api_key": "",
+    "auto_recue_new_imports": "0",
+    "auto_recue_daily_cap": "50",
 }
 
 

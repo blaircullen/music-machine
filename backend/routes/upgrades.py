@@ -547,6 +547,10 @@ def _run_download_worker():
                         "INSERT OR IGNORE INTO analysis_queue (track_id) VALUES (?)",
                         (new_track_cur.lastrowid,),
                     )
+                    db.execute(
+                        "INSERT OR IGNORE INTO authenticity_queue (track_id) VALUES (?)",
+                        (new_track_cur.lastrowid,),
+                    )
 
                     # Mark queue item complete
                     db.execute(

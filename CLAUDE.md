@@ -14,31 +14,16 @@ Python 3.12, FastAPI, SQLite, React 19, Vite 7, Tailwind CSS v4
 - Docker build: `docker compose build`
 - Full rebuild: `docker compose build --no-cache && docker compose up -d`
 
-## Deploy (from dev machine)
+## Deploy (to Beast)
 
-**From a normal terminal** (SSH keys loaded):
+**From Claude Code shell:**
 ```bash
-rsync -av frontend/src/ sunygxc@10.0.0.75:/home/sunygxc/projects/music-machine/frontend/src/
-ssh sunygxc@10.0.0.75 "cd ~/projects/music-machine && docker compose build --no-cache && docker compose up -d"
-```
-
-**From Claude Code shell** (`ssh-add --apple-load-keychain` does NOT work in Claude's Bash env — use sshpass):
-```bash
-rsync -av -e "sshpass -p 'Sh4nn1tyw3b' ssh -o StrictHostKeyChecking=no" \
-  frontend/src/ sunygxc@10.0.0.75:/home/sunygxc/projects/music-machine/frontend/src/
-sshpass -p 'Sh4nn1tyw3b' ssh -o StrictHostKeyChecking=no sunygxc@10.0.0.75 \
-  "cd ~/projects/music-machine && docker compose build --no-cache && docker compose up -d"
-```
-
-### Fast Deploy (frontend-only, to Beast directly)
-
-There is NO volume mount for `frontend/dist/` — it is baked into the Docker image.
-A full rebuild is always required for frontend changes. Use:
-
-```bash
-rsync -av -e "sshpass -p 'Sh4nn1tyw3b' ssh -o StrictHostKeyChecking=no" frontend/src/ olares@10.0.0.13:~/projects/music-machine/frontend/src/
+rsync -av frontend/src/ olares@10.0.0.13:~/projects/music-machine/frontend/src/
 ssh olares@10.0.0.13 'cd ~/projects/music-machine && docker compose build --no-cache && docker compose up -d'
 ```
+
+There is NO volume mount for `frontend/dist/` — it is baked into the Docker image.
+A full rebuild is always required for frontend changes.
 
 For backend Python changes: `docker cp` the .py file into the container + `docker restart music-machine` (no rebuild needed if not adding new deps). Backend files live at `/app/` inside the container (e.g. `docker cp backend/sonic_service.py music-machine:/app/sonic_service.py`). `scp` to the host path does NOT update the running container — it's baked into the image.
 
@@ -143,7 +128,7 @@ No automated file actions — user wants to review all duplicate resolutions man
 
 ## MusicGrabber Integration
 
-**URL:** `http://10.0.0.75:38274` (same VM 101)
+**URL:** `http://10.0.0.13:38274` (Beast)
 **Source:** Monochrome API (`api.monochrome.tf`) — free Tidal frontend, no subscription
 **Quality cascade:** HI_RES_LOSSLESS → LOSSLESS → HIGH → LOW
 

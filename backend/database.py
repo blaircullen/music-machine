@@ -309,6 +309,9 @@ def init_db():
             ("upgrade_include_flac_hires", "true"),
             ("lastfm_api_key", ""),
             ("sonic_concurrency", "2"),
+            ("auto_recue_new_imports", "false"),
+            ("auto_recue_daily_cap", "50"),
+            ("lossless_concurrency", "1"),
             ("audd_api_key", "0b109e9c1fef8b670abdd86dd24d3c7d"),
             ("audd_monthly_budget", "20"),
             ("fp_auto_threshold", "0.95"),
@@ -323,6 +326,8 @@ def init_db():
 
         # Migrate upgrade_queue from slskd columns to MusicGrabber columns
         _migrate_upgrade_queue(db)
+        _migrate_authenticity_queue(db)
+        _migrate_track_authenticity(db)
 
         # Seed genre normalization map
         try:
@@ -359,6 +364,37 @@ def _migrate_upgrade_queue(db):
     for col, col_type in new_cols.items():
         if col not in existing_cols:
             db.execute(f"ALTER TABLE upgrade_queue ADD COLUMN {col} {col_type}")
+
+
+def _migrate_authenticity_queue(db):
+    """Add retry/backoff columns to authenticity_queue if they don't exist."""
+    cursor = db.execute("PRAGMA table_info(authenticity_queue)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+
+    new_cols = {
+        "attempts": "INTEGER DEFAULT 0",
+        "next_check_at": "TEXT",
+        "last_status": "TEXT",
+    }
+    for col, col_type in new_cols.items():
+        if col not in existing_cols:
+            db.execute(f"ALTER TABLE authenticity_queue ADD COLUMN {col} {col_type}")
+
+
+def _migrate_track_authenticity(db):
+    """Add detector detail columns to track_authenticity if they don't exist."""
+    cursor = db.execute("PRAGMA table_info(track_authenticity)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+
+    new_cols = {
+        "channels": "INTEGER",
+        "duration": "REAL",
+        "n_windows_used": "INTEGER",
+        "error": "TEXT",
+    }
+    for col, col_type in new_cols.items():
+        if col not in existing_cols:
+            db.execute(f"ALTER TABLE track_authenticity ADD COLUMN {col} {col_type}")
 
 
 @contextmanager

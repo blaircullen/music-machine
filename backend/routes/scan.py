@@ -155,6 +155,11 @@ def run_scan(music_path: Path):
                     "INSERT OR IGNORE INTO analysis_queue (track_id) VALUES (?)",
                     (cur.lastrowid,),
                 )
+                if str(meta["file_path"]).lower().endswith(".flac"):
+                    db.execute(
+                        "INSERT OR IGNORE INTO authenticity_queue (track_id) VALUES (?)",
+                        (cur.lastrowid,),
+                    )
 
         # Mark deleted files
         _update_status(phase="scanning", current_file="Checking for removed files...")

@@ -5,3 +5,19 @@ services:
       - /mnt/nas_music:/music
       - /mnt/music_dupes:/trash
       - ./staging:/staging
+
+  lossless-analyzer:
+    build:
+      context: .
+      dockerfile: lossless-analyzer/Dockerfile
+    container_name: lossless-analyzer
+    volumes:
+      - ./data:/data
+      - /mnt/nas/music:/music
+    environment:
+      - MUSICGRABBER_URL=http://10.0.0.13:38274
+      - DB_PATH=/data/music-machine.db
+      - MUSIC_PATH=/music
+    restart: unless-stopped
+    depends_on:
+      - music-machine
