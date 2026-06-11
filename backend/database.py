@@ -364,6 +364,40 @@ def init_db():
                 owner_id        TEXT,
                 acquired_at     TEXT
             );
+
+            -- Identity resolution results (U4 — identity_resolver.py owns the logic)
+            -- Six states: confirmed | review | unknown | conflict | deferred | error
+            -- T3 (album lock) is reserved for Phase 2; gap in tier numbering is intentional.
+            CREATE TABLE IF NOT EXISTS track_identity (
+                track_id         INTEGER PRIMARY KEY REFERENCES tracks(id),
+                state            TEXT NOT NULL CHECK(state IN (
+                                     'confirmed','review','unknown',
+                                     'conflict','deferred','error')),
+                mb_recording_id  TEXT,
+                mb_release_id    TEXT,
+                isrc             TEXT,
+                artist           TEXT,
+                title            TEXT,
+                album            TEXT,
+                date             TEXT,
+                track_no         INTEGER,
+                tier             TEXT,
+                evidence         TEXT NOT NULL,
+                divergent        INTEGER DEFAULT 0,
+                decided_at       TEXT DEFAULT (datetime('now')),
+                resolver_version TEXT,
+                reviewed_by      TEXT,
+                reviewed_at      TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_track_identity_state
+                ON track_identity(state);
+            CREATE INDEX IF NOT EXISTS idx_track_identity_divergent
+                ON track_identity(divergent);
+            CREATE INDEX IF NOT EXISTS idx_track_identity_mb_recording_id
+                ON track_identity(mb_recording_id);
+            CREATE INDEX IF NOT EXISTS idx_track_identity_resolver_version
+                ON track_identity(resolver_version);
         """)
 
         # Insert default settings if not present
