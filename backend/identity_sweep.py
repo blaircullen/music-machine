@@ -30,7 +30,9 @@ track deferred with mirror_available=False and stop (resumable).
 
 Resumable sweep
 ---------------
-Only processes tracks that have no track_identity row at RESOLVER_VERSION.
+Processes tracks that have no track_identity row at RESOLVER_VERSION, plus
+tracks whose row is in a non-terminal mechanical state (deferred / error) —
+those are re-resolved automatically per the resolver transition map.
 Re-run after a stop continues from where it left off.
 
 Lease / epoch fencing
@@ -414,7 +416,8 @@ def _run_sweep_with_lease(lease: job_locks.Lease, dry_run: bool = False) -> None
             SELECT COUNT(*) FROM tracks t
             LEFT JOIN track_identity ti
                 ON ti.track_id = t.id AND ti.resolver_version = ?
-            WHERE t.status = 'active' AND ti.track_id IS NULL
+            WHERE t.status = 'active'
+              AND (ti.track_id IS NULL OR ti.state IN ('deferred', 'error'))
             """,
             (RESOLVER_VERSION,),
         ).fetchone()[0]
@@ -436,7 +439,9 @@ def _run_sweep_with_lease(lease: job_locks.Lease, dry_run: bool = False) -> None
                 FROM tracks t
                 LEFT JOIN track_identity ti
                     ON ti.track_id = t.id AND ti.resolver_version = ?
-                WHERE t.status = 'active' AND ti.track_id IS NULL AND t.id > ?
+                WHERE t.status = 'active'
+                  AND (ti.track_id IS NULL OR ti.state IN ('deferred', 'error'))
+                  AND t.id > ?
                 ORDER BY t.id
                 LIMIT ?
                 """,

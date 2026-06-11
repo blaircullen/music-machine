@@ -2,9 +2,14 @@ services:
   music-machine:
     volumes:
       - ./data:/data
-      - /mnt/nas_music:/music
+      - /mnt/nas/music:/music
       - /mnt/music_dupes:/trash
       - ./staging:/staging
+
+  sonic-analyzer:
+    volumes:
+      - ./data:/data
+      - /mnt/nas/music:/music:ro
 
   lossless-analyzer:
     build:
