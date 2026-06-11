@@ -216,7 +216,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="music-machine", version="2.0.0", lifespan=lifespan)
 
 # Import and register all routers
-from routes import scan, dupes, upgrades, trash, stats, jobs, settings, reorg, playlists, tagger, stations, sonic, fingerprint, authenticity
+from routes import scan, dupes, upgrades, trash, stats, jobs, settings, reorg, playlists, tagger, stations, sonic, fingerprint, authenticity, identity
 
 app.include_router(scan.router)
 app.include_router(dupes.router)
@@ -232,6 +232,7 @@ app.include_router(stations.router)
 app.include_router(sonic.router)
 app.include_router(fingerprint.router)
 app.include_router(authenticity.router)
+app.include_router(identity.router)
 
 
 @app.websocket("/ws")
