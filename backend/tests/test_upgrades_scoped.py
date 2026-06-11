@@ -40,9 +40,25 @@ def test_unscanned_endpoint():
 
 
 def test_approve_hi_res_endpoint():
+    from database import get_db
+
+    # Kill switch (default false) blocks approve endpoints with 403
     res = client.post("/api/upgrades/approve-hi-res")
-    assert res.status_code == 200
-    data = res.json()
-    assert "ok" in data
-    assert "approved" in data
-    assert isinstance(data["approved"], int)
+    assert res.status_code == 403
+
+    with get_db() as db:
+        db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('identity_act_enabled', 'true')"
+        )
+    try:
+        res = client.post("/api/upgrades/approve-hi-res")
+        assert res.status_code == 200
+        data = res.json()
+        assert "ok" in data
+        assert "approved" in data
+        assert isinstance(data["approved"], int)
+    finally:
+        with get_db() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('identity_act_enabled', 'false')"
+            )

@@ -1,4 +1,5 @@
 import sqlite3
+import sys
 from pathlib import Path
 from contextlib import contextmanager
 import os
@@ -6,7 +7,55 @@ import os
 DB_PATH = Path(os.environ.get("DB_PATH", "/data/music-machine.db"))
 
 
+def assert_db_on_local_disk() -> None:
+    """
+    Refuse to start if the DB file lives on an NFS mount.
+
+    On Linux, parses /proc/mounts to find the mount entry whose mountpoint is
+    the longest prefix of DB_PATH's resolved path.  If the filesystem type
+    starts with 'nfs', raises RuntimeError.
+
+    No-op on macOS and other non-Linux platforms (tested locally with temp
+    files, never deployed on NFS there).
+    """
+    if sys.platform != "linux":
+        return
+
+    try:
+        resolved = DB_PATH.resolve()
+        proc_mounts = Path("/proc/mounts")
+        if not proc_mounts.exists():
+            return  # Non-standard Linux — skip check
+
+        best_mount = "/"
+        best_fstype = ""
+        for line in proc_mounts.read_text().splitlines():
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            _device, mountpoint, fstype = parts[0], parts[1], parts[2]
+            try:
+                if resolved.is_relative_to(mountpoint) and len(mountpoint) >= len(best_mount):
+                    best_mount = mountpoint
+                    best_fstype = fstype
+            except (ValueError, TypeError):
+                continue
+
+        if best_fstype.startswith("nfs"):
+            raise RuntimeError(
+                f"DB_PATH={DB_PATH} is on an NFS filesystem ({best_fstype} at "
+                f"{best_mount}).  Music Machine requires a local disk for SQLite. "
+                "Set DB_PATH to a local path and restart."
+            )
+    except RuntimeError:
+        raise
+    except Exception:
+        # Defensive: don't crash startup on parse errors
+        pass
+
+
 def init_db():
+    assert_db_on_local_disk()
     with get_db() as db:
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=NORMAL")
@@ -299,6 +348,22 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_fp_status ON fingerprint_results(status);
             CREATE INDEX IF NOT EXISTS idx_fp_confidence ON fingerprint_results(composite_confidence);
             CREATE INDEX IF NOT EXISTS idx_fp_track ON fingerprint_results(track_id);
+
+            -- Lease-based job locks (U9 — job_locks.py owns the logic)
+            CREATE TABLE IF NOT EXISTS job_locks (
+                job_name        TEXT PRIMARY KEY,
+                owner_id        TEXT,
+                epoch           INTEGER,
+                lease_expires_at TEXT,
+                last_heartbeat  TEXT
+            );
+
+            -- Per-recording action locks (U9 — prevents dedup/upgrade race)
+            CREATE TABLE IF NOT EXISTS recording_locks (
+                mb_recording_id TEXT PRIMARY KEY,
+                owner_id        TEXT,
+                acquired_at     TEXT
+            );
         """)
 
         # Insert default settings if not present
