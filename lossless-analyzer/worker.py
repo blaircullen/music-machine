@@ -16,7 +16,10 @@ from typing import Any
 import httpx
 
 import lossless_detect
+import lidarr_client
+import lidarr_recue
 import recue_fakes
+from database import log_recue
 
 
 logging.basicConfig(
@@ -142,19 +145,41 @@ def update_queue_retry(track_id: int, status: str) -> None:
 
 
 def defer_queue(track_id: int, status: str) -> None:
+    defer_queue_for(track_id, status, "1 day")
+
+
+def defer_queue_for(track_id: int, status: str, interval: str) -> None:
     conn = get_db()
     try:
         conn.execute(
             """
             UPDATE authenticity_queue
                SET last_status = ?,
-                   next_check_at = datetime('now', '+1 day')
+                   next_check_at = datetime('now', ?)
              WHERE track_id = ?
             """,
-            (status, track_id),
+            (status, f"+{interval}", track_id),
         )
         conn.commit()
-        logger.info("Track %s: deferred for 1 day, status=%s", track_id, status)
+        logger.info("Track %s: deferred for %s, status=%s", track_id, interval, status)
+    finally:
+        conn.close()
+
+
+def set_lidarr_searching(track_id: int, attempt: int) -> None:
+    conn = get_db()
+    try:
+        conn.execute(
+            """
+            UPDATE authenticity_queue
+               SET last_status = ?,
+                   next_check_at = datetime('now', '+6 hours')
+             WHERE track_id = ?
+            """,
+            (f"lidarr_searching:{attempt}", track_id),
+        )
+        conn.commit()
+        logger.info("Track %s: Lidarr search attempt %s queued for check in 6 hours", track_id, attempt)
     finally:
         conn.close()
 
@@ -228,7 +253,7 @@ def next_track() -> sqlite3.Row | None:
     conn = get_db()
     try:
         base_sql = (
-            "SELECT aq.track_id, t.file_path "
+            "SELECT aq.track_id, aq.last_status, t.file_path, t.artist, t.album, t.title "
             "FROM authenticity_queue aq "
             "JOIN tracks t ON t.id = aq.track_id "
             "WHERE (aq.next_check_at IS NULL OR aq.next_check_at <= datetime('now')) "
@@ -271,12 +296,30 @@ def increment_recue_count(key: str) -> int:
         conn.close()
 
 
+def write_recue_log(track_id: int, source: str, status: str, track_meta: dict[str, str]) -> None:
+    try:
+        log_recue(
+            DB_PATH,
+            track_id,
+            source,
+            status,
+            track_meta.get("album") or "",
+            track_meta.get("title") or "",
+        )
+    except Exception as exc:
+        logger.warning("Track %s: failed to write recue_log status=%s source=%s: %s", track_id, status, source, exc)
+
+
 def can_attempt_recue(track_id: int, analysis: dict[str, Any]) -> tuple[bool, str]:
     confidence = float(analysis.get("confidence") or 0.0)
     if confidence < 0.90:
         return False, "low_confidence"
+    return True, ""
+
+
+def can_attempt_musicgrabber_recue(track_id: int) -> tuple[bool, str]:
     if not truthy(get_setting("auto_recue_new_imports", "false")):
-        return False, "recue_deferred"
+        return False, "recue_disabled"
     try:
         cap = max(0, int(get_setting("auto_recue_daily_cap", "50") or "50"))
     except ValueError:
@@ -319,8 +362,106 @@ def run_auto_recue(track_id: int, file_path: Path) -> dict[str, str]:
     return {"status": status, "quality": quality, "query": query}
 
 
-def analyze_track(track_id: int, db_file_path: str) -> None:
+def parse_lidarr_attempt(status: str | None) -> int | None:
+    if not status or not status.startswith("lidarr_searching:"):
+        return None
+    try:
+        return int(status.rsplit(":", 1)[1])
+    except ValueError:
+        return None
+
+
+def lidarr_album_id(track_meta: dict[str, str]) -> int | None:
+    artist = lidarr_client.find_artist(track_meta.get("artist") or "", lidarr_recue.BASE, lidarr_recue.API_KEY)
+    if not artist:
+        return None
+    album = lidarr_client.find_album(int(artist["id"]), track_meta.get("album") or "", lidarr_recue.BASE, lidarr_recue.API_KEY)
+    if not album:
+        return None
+    return int(album["id"])
+
+
+def run_musicgrabber_fallback(track_id: int, file_path: Path, track_meta: dict[str, str]) -> None:
+    allowed, defer_status = can_attempt_musicgrabber_recue(track_id)
+    if not allowed:
+        defer_queue(track_id, defer_status)
+        return
+    result = run_auto_recue(track_id, file_path)
+    status = result["status"]
+    if status in SUCCESS_RECUE_STATUSES:
+        log_status = "fixed" if status in {"placed", "already_present"} else "staged"
+        write_recue_log(track_id, "musicgrabber", log_status, track_meta)
+        delete_from_queue(track_id)
+    elif status in RETRY_RECUE_STATUSES or status.startswith("error:"):
+        update_queue_retry(track_id, status)
+    else:
+        update_queue_retry(track_id, status or "unknown_recue_status")
+
+
+def process_confirmed_transcode(track_id: int, file_path: Path, track_meta: dict[str, str], last_status: str | None) -> None:
+    lidarr_recue.configure(get_setting("lidarr_url", "http://10.0.0.13:8787"), get_setting("lidarr_api_key", "2cecee10715a4c1dbe8daa16226f7ed7"))
+    auto_recue_enabled = truthy(get_setting("auto_recue_new_imports", "false"))
+    lidarr_enabled = truthy(get_setting("lidarr_recue_enabled", "true"))
+    dry_run = truthy(get_setting("lidarr_dry_run", "false"))
+
+    lidarr_attempt = parse_lidarr_attempt(last_status)
+    if lidarr_attempt is not None:
+        if not auto_recue_enabled:
+            defer_queue(track_id, last_status or "lidarr_searching:1")
+            return
+        album_id = lidarr_album_id(track_meta)
+        if album_id is None:
+            logger.info("Track %s: Lidarr album disappeared while checking result; falling back to MusicGrabber", track_id)
+            run_musicgrabber_fallback(track_id, file_path, track_meta)
+            return
+        result = lidarr_recue.check_lidarr_result(track_meta, album_id)
+        if result == "placed_lidarr":
+            write_recue_log(track_id, "lidarr", "fixed", track_meta)
+            delete_from_queue(track_id)
+            return
+        if lidarr_attempt < 2:
+            set_lidarr_searching(track_id, lidarr_attempt + 1)
+            return
+        logger.info("Track %s: Lidarr pending after %s checks; falling back to MusicGrabber", track_id, lidarr_attempt)
+        run_musicgrabber_fallback(track_id, file_path, track_meta)
+        return
+
+    if not auto_recue_enabled:
+        defer_queue(track_id, "recue_disabled")
+        return
+
+    if lidarr_enabled:
+        allowed, defer_status = can_attempt_musicgrabber_recue(track_id)
+        if not allowed:
+            defer_queue(track_id, defer_status)
+            return
+        result = lidarr_recue.recue_via_lidarr(track_meta, str(file_path), dry_run=dry_run)
+        if result == "lidarr_searching":
+            if not dry_run:
+                increment_recue_count(get_daily_count_key())
+                write_recue_log(track_id, "lidarr", "triggered", track_meta)
+            set_lidarr_searching(track_id, 1)
+            return
+        if result == "lidarr_inflight":
+            defer_queue_for(track_id, result, "6 hours")
+            return
+        if result == "lidarr_no_album":
+            logger.info("Track %s: Lidarr had no album; falling back to MusicGrabber", track_id)
+            run_musicgrabber_fallback(track_id, file_path, track_meta)
+            return
+        update_queue_retry(track_id, result)
+        return
+
+    run_musicgrabber_fallback(track_id, file_path, track_meta)
+
+
+def analyze_track(track_id: int, db_file_path: str, track_meta: dict[str, str] | None = None, last_status: str | None = None) -> None:
+    track_meta = dict(track_meta or {})
+    track_meta.setdefault("file_path", db_file_path)
     file_path = map_music_path(db_file_path)
+    if parse_lidarr_attempt(last_status) is not None:
+        process_confirmed_transcode(track_id, file_path, track_meta, last_status)
+        return
     if not db_file_path.lower().endswith(".flac"):
         logger.info("Track %s: non-FLAC in authenticity queue, removing: %s", track_id, db_file_path)
         delete_from_queue(track_id)
@@ -359,14 +500,7 @@ def analyze_track(track_id: int, db_file_path: str) -> None:
         defer_queue(track_id, defer_status)
         return
 
-    result = run_auto_recue(track_id, file_path)
-    status = result["status"]
-    if status in SUCCESS_RECUE_STATUSES:
-        delete_from_queue(track_id)
-    elif status in RETRY_RECUE_STATUSES or status.startswith("error:"):
-        update_queue_retry(track_id, status)
-    else:
-        update_queue_retry(track_id, status or "unknown_recue_status")
+    process_confirmed_transcode(track_id, file_path, track_meta, last_status)
 
 
 def _worker_thread(worker_id: int) -> None:
@@ -385,7 +519,13 @@ def _worker_thread(worker_id: int) -> None:
                     continue
                 _in_progress.add(track_id)
             try:
-                analyze_track(track_id, str(row["file_path"]))
+                track_meta = {
+                    "artist": str(row["artist"] or ""),
+                    "album": str(row["album"] or ""),
+                    "title": str(row["title"] or ""),
+                    "file_path": str(row["file_path"]),
+                }
+                analyze_track(track_id, str(row["file_path"]), track_meta, str(row["last_status"] or ""))
                 time.sleep(INTER_TRACK_SLEEP)
             finally:
                 with _in_progress_lock:

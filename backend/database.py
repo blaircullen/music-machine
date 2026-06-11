@@ -311,6 +311,10 @@ def init_db():
             ("sonic_concurrency", "2"),
             ("auto_recue_new_imports", "false"),
             ("auto_recue_daily_cap", "50"),
+            ("lidarr_recue_enabled", "true"),
+            ("lidarr_url", "http://10.0.0.13:8787"),
+            ("lidarr_api_key", "2cecee10715a4c1dbe8daa16226f7ed7"),
+            ("lidarr_quality_profile_id", "2"),
             ("lossless_concurrency", "1"),
             ("audd_api_key", "0b109e9c1fef8b670abdd86dd24d3c7d"),
             ("audd_monthly_budget", "20"),
@@ -328,6 +332,7 @@ def init_db():
         _migrate_upgrade_queue(db)
         _migrate_authenticity_queue(db)
         _migrate_track_authenticity(db)
+        _migrate_recue_log(db)
 
         # Seed genre normalization map
         try:
@@ -395,6 +400,55 @@ def _migrate_track_authenticity(db):
     for col, col_type in new_cols.items():
         if col not in existing_cols:
             db.execute(f"ALTER TABLE track_authenticity ADD COLUMN {col} {col_type}")
+
+
+def _migrate_recue_log(db):
+    """Create additive recue outcome log for auto-recue metrics."""
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS recue_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_id INTEGER,
+            source TEXT,
+            status TEXT,
+            album TEXT,
+            title TEXT,
+            recued_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    db.execute("CREATE INDEX IF NOT EXISTS idx_recue_log_status ON recue_log(status)")
+
+
+def log_recue(
+    conn_or_path: sqlite3.Connection | str | Path,
+    track_id: int,
+    source: str,
+    status: str,
+    album: str | None,
+    title: str | None,
+) -> None:
+    """Append one recue metric row using an existing connection or DB path."""
+    should_close = not isinstance(conn_or_path, sqlite3.Connection)
+    conn = (
+        sqlite3.connect(str(conn_or_path), check_same_thread=False, timeout=30)
+        if should_close
+        else conn_or_path
+    )
+    try:
+        _migrate_recue_log(conn)
+        conn.execute(
+            """
+            INSERT INTO recue_log (track_id, source, status, album, title)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (track_id, source, status, album or "", title or ""),
+        )
+        if should_close:
+            conn.commit()
+    finally:
+        if should_close:
+            conn.close()
 
 
 @contextmanager

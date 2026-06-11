@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import subprocess
 from pathlib import Path
 
@@ -133,6 +134,38 @@ def _render_spectrogram(track_id):
     return out_path
 
 
+def _recue_summary(db):
+    empty = {
+        "triggered": 0,
+        "fixed": 0,
+        "staged": 0,
+        "by_source": {"lidarr": 0, "musicgrabber": 0},
+    }
+    try:
+        triggered = db.execute("SELECT COUNT(DISTINCT track_id) FROM recue_log").fetchone()[0]
+        fixed = db.execute(
+            "SELECT COUNT(DISTINCT track_id) FROM recue_log WHERE status = 'fixed'"
+        ).fetchone()[0]
+        staged = db.execute("SELECT COUNT(*) FROM recue_log WHERE status = 'staged'").fetchone()[0]
+        by_source_rows = db.execute(
+            "SELECT source, COUNT(DISTINCT track_id) AS count FROM recue_log GROUP BY source"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return empty
+
+    by_source = dict(empty["by_source"])
+    for row in by_source_rows:
+        source = row["source"] or ""
+        if source in by_source:
+            by_source[source] = row["count"]
+    return {
+        "triggered": triggered,
+        "fixed": fixed,
+        "staged": staged,
+        "by_source": by_source,
+    }
+
+
 @router.get("/summary")
 def summary():
     with get_db() as db:
@@ -148,6 +181,7 @@ def summary():
                FROM tracks
                WHERE lower(file_path) LIKE '%.flac' AND status = 'active'"""
         ).fetchone()[0]
+        recue = _recue_summary(db)
 
     coverage_pct = round((analyzed / total_flac * 100), 2) if total_flac else 0.0
     return {
@@ -155,6 +189,7 @@ def summary():
         "analyzed": analyzed,
         "total_flac": total_flac,
         "coverage_pct": coverage_pct,
+        "recue": recue,
     }
 
 

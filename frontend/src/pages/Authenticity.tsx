@@ -29,6 +29,12 @@ interface AuthenticitySummary {
   analyzed: number
   total_flac: number
   coverage_pct: number
+  recue?: {
+    triggered: number
+    fixed: number
+    staged: number
+    by_source: Record<string, number>
+  }
 }
 
 interface AuthenticityItem {
@@ -223,6 +229,7 @@ export default function Authenticity() {
       transcode: counts.transcode ?? 0,
       coverage: `${(summary?.coverage_pct ?? 0).toFixed(1)}%`,
       analyzed: `${summary?.analyzed ?? 0}/${summary?.total_flac ?? 0}`,
+      recuedFixed: `${summary?.recue?.triggered ?? 0}/${summary?.recue?.fixed ?? 0}`,
     }
   }, [summary])
 
@@ -265,16 +272,17 @@ export default function Authenticity() {
       </div>
 
       {summaryLoading ? (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, index) => (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+          {Array.from({ length: 5 }).map((_, index) => (
             <Skeleton key={index} className="h-32 rounded-xl" />
           ))}
         </div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
           <StatCard icon={CheckCircle2} label="Lossless" value={statValues.lossless} accent="green" />
           <StatCard icon={AlertTriangle} label="Suspect" value={statValues.suspect} accent="amber" />
           <StatCard icon={XCircle} label="Transcode" value={statValues.transcode} accent="red" />
+          <StatCard icon={RefreshCw} label="Recued / Fixed" value={statValues.recuedFixed} accent="green" />
           <StatCard
             icon={FileAudio}
             label="Coverage"
