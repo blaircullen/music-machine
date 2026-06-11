@@ -439,10 +439,19 @@ def _process_track(track: dict, dry_run: bool, dir_lock: dict | None) -> dict:
             _fp_inc("unmatched")
             return {"track_id": track_id, "status": "unmatched"}
 
-        best_score = matches[0]["score"]
+        # Filter to tier-eligible candidates (score >= ACOUSTID_MIN_SCORE).
+        # Candidates with below_floor=True are retained by lookup_acoustid for
+        # veto logic but must not drive the legacy processing path here.
+        tier_matches = [m for m in matches if not m.get("below_floor", False)]
+        if not tier_matches:
+            _update_fp_status(fp_result_id, "unmatched", error="No AcoustID match above floor")
+            _fp_inc("unmatched")
+            return {"track_id": track_id, "status": "unmatched"}
+
+        best_score = tier_matches[0]["score"]
 
         # Step 3: Get metadata from local MusicBrainz mirror (or public API)
-        recording_id = matches[0]["recording_id"]
+        recording_id = tier_matches[0]["recording_id"]
         metadata = _get_mb_metadata(recording_id)
 
         if not metadata:

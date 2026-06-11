@@ -194,8 +194,13 @@ def identify_track(file_path: str) -> dict | None:
             },
         )
 
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read())
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+        except OSError as e:
+            # Transport-level failure (no response received) — do NOT bill
+            logger.warning(f"AudD transport error for {file_path}: {e}")
+            return None
 
         _record_usage()
 
@@ -207,7 +212,6 @@ def identify_track(file_path: str) -> dict | None:
 
     except Exception as e:
         logger.warning(f"AudD identify failed for {file_path}: {e}")
-        _record_usage()  # Still counts against budget
         return None
 
     finally:
@@ -261,6 +265,7 @@ def _parse_audd_result(result: dict) -> dict:
         "album": result.get("album", ""),
         "year": None,
         "isrc": None,
+        "duration_ms": None,
         "label": None,
         "spotify_id": None,
         "cover_art_url": None,
@@ -282,6 +287,7 @@ def _parse_audd_result(result: dict) -> dict:
     if spotify:
         metadata["spotify_id"] = spotify.get("id")
         metadata["dsp_ids"]["spotify"] = spotify.get("id")
+        metadata["duration_ms"] = spotify.get("duration_ms")
 
         # ISRC from Spotify
         ext_ids = spotify.get("external_ids", {})

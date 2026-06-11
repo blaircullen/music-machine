@@ -60,7 +60,9 @@ def get_recording_metadata(recording_mbid: str) -> dict | None:
     Fetch full recording metadata from the local MusicBrainz mirror.
 
     Returns dict with: artist, title, album, album_artist, date, track_number,
-    disc_number, total_tracks, release_group_id, release_id, isrc, label,
+    disc_number, total_tracks, release_group_id, release_id, isrc (first ISRC
+    for backward compat), isrcs (all ISRCs as list[str]), length_ms (recording
+    length in milliseconds as stored natively in MB — no truncation), label,
     composer, genre_tags (list of {tag, count}).
 
     Returns None if not found or mirror unavailable.
@@ -96,6 +98,7 @@ def _query_recording(conn, recording_mbid: str) -> dict | None:
 
     recording_id = rec_row[0]
     title = rec_row[1]
+    length_ms = rec_row[2]  # Native MB unit is milliseconds; may be None
 
     # 2. Get artist credits
     cur.execute("""
@@ -170,14 +173,15 @@ def _query_recording(conn, recording_mbid: str) -> dict | None:
         total_tracks = rel_row[9]
         album_artist = rel_row[10] or artist
 
-    # 4. Get ISRCs
+    # 4. Get ISRCs — fetch all; keep first in `isrc` for backward compat
     cur.execute("""
         SELECT isrc FROM musicbrainz.isrc
         WHERE recording = %s
-        LIMIT 1
+        ORDER BY isrc
     """, (recording_id,))
-    isrc_row = cur.fetchone()
-    isrc = isrc_row[0] if isrc_row else None
+    isrc_rows = cur.fetchall()
+    isrcs = [row[0] for row in isrc_rows]
+    isrc = isrcs[0] if isrcs else None
 
     # 5. Get label (from best release)
     label = None
@@ -236,10 +240,44 @@ def _query_recording(conn, recording_mbid: str) -> dict | None:
         "release_group_id": release_group_id,
         "release_id": release_id,
         "isrc": isrc,
+        "isrcs": isrcs,
+        "length_ms": length_ms,
         "label": label,
         "composer": composer,
         "genre_tags": genre_tags,
     }
+
+
+def recordings_for_isrc(isrc: str) -> list[str]:
+    """
+    Return MB recording GIDs (MBIDs) that are mapped to the given ISRC.
+
+    Used by T1's unique-recording check: if exactly one MBID is returned the
+    ISRC is unambiguous; multiple MBIDs mean ISRC reuse and T1 cannot confirm.
+
+    Returns [] when the mirror is unavailable or no mapping exists.
+    """
+    pool = _get_pool()
+    if pool is None:
+        return []
+
+    try:
+        conn = pool.getconn()
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT r.gid::text
+                FROM musicbrainz.isrc i
+                JOIN musicbrainz.recording r ON r.id = i.recording
+                WHERE i.isrc = %s
+                ORDER BY r.gid
+            """, (isrc,))
+            return [row[0] for row in cur.fetchall()]
+        finally:
+            pool.putconn(conn)
+    except Exception as e:
+        logger.warning(f"recordings_for_isrc failed for {isrc}: {e}")
+        return []
 
 
 def search_by_acoustid(recording_mbids: list[str]) -> list[dict]:

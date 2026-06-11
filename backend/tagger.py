@@ -27,7 +27,11 @@ from scanner import AUDIO_EXTENSIONS
 logger = logging.getLogger(__name__)
 
 ACOUSTID_API_KEY = os.environ.get("ACOUSTID_API_KEY", "Yx40zTgSFD")
+# Candidates at or above this score participate in tier decisions.
 ACOUSTID_MIN_SCORE = 0.5
+# Candidates down to this score are retained in the returned list (with
+# below_floor=True) so that veto logic can evaluate the full candidate set.
+ACOUSTID_RETAIN_SCORE = 0.3
 
 # Set a descriptive user-agent per MusicBrainz API requirements
 musicbrainzngs.set_useragent("MusicMachine-MetaTagger", "1.0", "https://github.com/blaircullen/music-machine")
@@ -42,7 +46,13 @@ socket.setdefaulttimeout(30)  # Prevent musicbrainzngs from hanging indefinitely
 def lookup_acoustid(fingerprint: str, duration: float) -> list[dict]:
     """
     Query AcoustID API for matching MusicBrainz recording IDs.
-    Returns list of {recording_id, score} sorted by score descending.
+
+    Returns list of {recording_id, score, below_floor} sorted by score
+    descending, where below_floor=True when score < ACOUSTID_MIN_SCORE (0.5).
+    Candidates below ACOUSTID_RETAIN_SCORE (0.3) are dropped entirely.
+
+    Callers that only want tier-eligible candidates should filter to
+    below_floor=False.  Veto logic must evaluate the full returned set.
     """
     import urllib.request
     import urllib.parse
@@ -67,7 +77,7 @@ def lookup_acoustid(fingerprint: str, duration: float) -> list[dict]:
     results = []
     for result in data.get("results", []):
         score = result.get("score", 0)
-        if score < ACOUSTID_MIN_SCORE:
+        if score < ACOUSTID_RETAIN_SCORE:
             continue
         for recording in result.get("recordings", []):
             rec_id = recording.get("id")
@@ -80,7 +90,14 @@ def lookup_acoustid(fingerprint: str, duration: float) -> list[dict]:
         rid = r["recording_id"]
         if rid not in seen or r["score"] > seen[rid]["score"]:
             seen[rid] = r
-    return sorted(seen.values(), key=lambda x: x["score"], reverse=True)
+
+    sorted_results = sorted(seen.values(), key=lambda x: x["score"], reverse=True)
+
+    # Annotate with below_floor flag
+    for r in sorted_results:
+        r["below_floor"] = r["score"] < ACOUSTID_MIN_SCORE
+
+    return sorted_results
 
 
 # ---------------------------------------------------------------------------
