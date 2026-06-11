@@ -13,6 +13,7 @@ const Settings = lazy(() => import('./pages/Settings'))
 const Duplicates = lazy(() => import('./pages/Duplicates'))
 const Trash = lazy(() => import('./pages/Trash'))
 const Player = lazy(() => import('./pages/Player'))
+const Authenticity = lazy(() => import('./pages/Authenticity'))
 const FingerprintDashboard = lazy(() => import('./pages/Fingerprint'))
 const FingerprintReview = lazy(() => import('./pages/FingerprintReview'))
 const FingerprintUnmatched = lazy(() => import('./pages/FingerprintUnmatched'))
@@ -75,6 +76,7 @@ export default function App() {
                     <Route path="/settings" element={<Settings />} />
                     <Route path="/duplicates" element={<Duplicates />} />
                     <Route path="/trash" element={<Trash />} />
+                    <Route path="/authenticity" element={<Authenticity />} />
                     <Route path="/fingerprint" element={<FingerprintDashboard />} />
                     <Route path="/fingerprint/review" element={<FingerprintReview />} />
                     <Route path="/fingerprint/unmatched" element={<FingerprintUnmatched />} />

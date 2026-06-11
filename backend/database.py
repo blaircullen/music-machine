@@ -165,8 +165,28 @@ def init_db():
                 analyzed_at      TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS track_authenticity (
+                track_id INTEGER PRIMARY KEY REFERENCES tracks(id),
+                verdict TEXT,
+                confidence REAL,
+                cutoff_hz REAL,
+                nyquist_hz REAL,
+                shelf_db REAL,
+                sharpness REAL,
+                source_guess TEXT,
+                sample_rate INTEGER,
+                spectrogram_path TEXT,
+                method_version INTEGER,
+                analyzed_at TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS analysis_queue (
                 track_id  INTEGER PRIMARY KEY,
+                queued_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS authenticity_queue (
+                track_id INTEGER PRIMARY KEY,
                 queued_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
@@ -200,6 +220,8 @@ def init_db():
                 ON station_track_history(station_id, generated_at);
             CREATE INDEX IF NOT EXISTS idx_track_features_analyzed_at
                 ON track_features(analyzed_at);
+            CREATE INDEX IF NOT EXISTS idx_track_authenticity_verdict
+                ON track_authenticity(verdict);
             CREATE INDEX IF NOT EXISTS idx_analysis_queue_queued_at
                 ON analysis_queue(queued_at);
             CREATE INDEX IF NOT EXISTS idx_station_feedback_station_id
