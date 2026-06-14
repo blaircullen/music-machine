@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Play, Square, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react'
+import { Play, Square, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, AlertTriangle, Check, X, Wand2 } from 'lucide-react'
 import { GlassCard } from '../components/ui/GlassCard'
 import { Button } from '../components/ui/Button'
 import { Badge } from '../components/ui/Badge'
 import {
   getIdentityReport, getIdentitySweepStatus, startIdentitySweep, stopIdentitySweep,
-  getIdentityTracks,
+  getIdentityTracks, reviewIdentityTrack, applyApprovedIdentity,
   type IdentityReport as IdentityReportData,
   type IdentitySweepStatus, type IdentityTrackItem, type IdentityBucket,
 } from '../lib/api'
@@ -47,6 +47,8 @@ export default function IdentityReport() {
   const [loading, setLoading] = useState(true)
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [sweepRequested, setSweepRequested] = useState(false)
+  const [actioning, setActioning] = useState<number | null>(null)
+  const [applyMsg, setApplyMsg] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const loadReport = useCallback(async () => {
@@ -111,6 +113,36 @@ export default function IdentityReport() {
     loadReport()
   }
 
+  const handleReview = async (trackId: number, decision: 'approve' | 'reject') => {
+    setActioning(trackId)
+    try {
+      const res = await reviewIdentityTrack(trackId, decision)
+      if (res.ok) {
+        setItems((prev) => prev.filter((it) => it.track_id !== trackId))
+        setTotal((t) => Math.max(0, t - 1))
+        setExpandedId(null)
+      }
+    } catch {
+      // ignore
+    } finally {
+      setActioning(null)
+    }
+  }
+
+  const handleApplyApproved = async () => {
+    setApplyMsg('Applying approved…')
+    try {
+      const res = await applyApprovedIdentity(['artist', 'title', 'album'])
+      if (!res.ok) { setApplyMsg(`Error: ${res.error ?? 'failed'}`); return }
+      if (!res.summary) { setApplyMsg(res.note ?? 'No approved rows pending'); return }
+      setApplyMsg(`Applied ${res.summary.applied}, ${res.summary.errors} error(s)`)
+      loadReport()
+      loadBucket(bucket, offset)
+    } catch {
+      setApplyMsg('Apply failed')
+    }
+  }
+
   const selectBucket = (b: IdentityBucket) => {
     setBucket(b)
     setOffset(0)
@@ -131,6 +163,12 @@ export default function IdentityReport() {
           {report && <Badge variant="default">{report.total_resolved} / {report.total_active} resolved</Badge>}
         </div>
         <div className="flex gap-2">
+          {bucket === 'review' && (
+            <Button onClick={handleApplyApproved} size="sm" variant="secondary">
+              <Wand2 className="w-3.5 h-3.5 mr-1.5" />
+              Apply approved
+            </Button>
+          )}
           {running ? (
             <Button onClick={handleStop} size="sm" variant="secondary">
               <Square className="w-3.5 h-3.5 mr-1.5" />
@@ -144,6 +182,10 @@ export default function IdentityReport() {
           )}
         </div>
       </div>
+
+      {applyMsg && (
+        <div className="text-xs text-amber-300">{applyMsg}</div>
+      )}
 
       {/* Sweep progress */}
       {running && sweep && (
@@ -250,6 +292,23 @@ export default function IdentityReport() {
                     <span>Decided: <span className="text-slate-300">{item.decided_at}</span></span>
                   </div>
                   <div className="text-xs text-slate-600 truncate">{item.file_path}</div>
+                  {(bucket === 'review' || bucket === 'conflict') && item.artist && (
+                    <div className="flex items-center gap-2 pt-1">
+                      <Button size="sm" disabled={actioning === item.track_id}
+                              onClick={() => handleReview(item.track_id, 'approve')}>
+                        <Check className="w-3.5 h-3.5 mr-1.5" />
+                        Approve
+                      </Button>
+                      <Button size="sm" variant="secondary" disabled={actioning === item.track_id}
+                              onClick={() => handleReview(item.track_id, 'reject')}>
+                        <X className="w-3.5 h-3.5 mr-1.5" />
+                        Reject
+                      </Button>
+                      <span className="text-[11px] text-slate-500">
+                        Approve marks it; click “Apply approved” to write tags.
+                      </span>
+                    </div>
+                  )}
                   <pre className="text-[11px] text-slate-400 bg-slate-950/60 rounded-lg p-3 overflow-x-auto max-h-72 overflow-y-auto">
                     {(() => {
                       try { return JSON.stringify(JSON.parse(item.evidence), null, 2) }

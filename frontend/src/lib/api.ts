@@ -622,3 +622,32 @@ export function getIdentityTracks(
     `/identity/tracks/${bucket}?limit=${limit}&offset=${offset}`,
   )
 }
+
+export function reviewIdentityTrack(
+  trackId: number,
+  decision: 'approve' | 'reject',
+): Promise<{ ok: boolean; error?: string }> {
+  return request<{ ok: boolean; error?: string }>(
+    `/identity/track/${trackId}/review`,
+    { method: 'POST', body: JSON.stringify({ decision }) },
+  )
+}
+
+export interface ApplyApprovedResult {
+  ok: boolean
+  requested?: number
+  summary?: { candidates: number; with_changes: number; applied: number; errors: number } | null
+  errors?: Array<{ track_id: number; error: string }>
+  note?: string
+  error?: string
+}
+
+export function applyApprovedIdentity(
+  fields?: string[],
+  limit?: number,
+): Promise<ApplyApprovedResult> {
+  return request<ApplyApprovedResult>('/identity/apply-approved', {
+    method: 'POST',
+    body: JSON.stringify({ fields: fields ?? null, limit: limit ?? null }),
+  })
+}
