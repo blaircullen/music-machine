@@ -108,7 +108,8 @@ Design LOCKED & Codex-validated (2 rounds). Implementation order: (P1) usenet up
 `album_upgrades` migration → (P2) U7 dedup → (P3) lazy thaw.
 - **P1: DONE + Codex-validated + DEPLOYED 2026-06-17** (`backend/upgrade_usenet.py`,
   `database._migrate_album_upgrades`). Live-verified inside the container.
-- **P2, P3: IMPLEMENTED + Codex-AGREED (3 rounds) + tested — NOT yet deployed (2026-06-17).**
+- **P2, P3: IMPLEMENTED + Codex-AGREED (3 rounds) + tested + DEPLOYED & live-verified 2026-06-17**
+  (commit `a7f404c`; `docker cp` + restart on Beast; dedup_actions table + safe flags confirmed live).
   New: `backend/dedup_pass.py`, `backend/routes/dedup.py`, `backend/upgrade_thaw.py`,
   `backend/tests/test_dedup_pass.py`, `backend/tests/test_upgrade_thaw.py`. Modified:
   `database.py` (`_migrate_dedup_actions`, `dedup_act_enabled`, `upgrade_paused`),
