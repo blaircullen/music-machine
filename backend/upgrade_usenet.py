@@ -25,7 +25,9 @@ if str(BACKEND_DIR) not in sys.path:
 
 import database  # noqa: E402
 import lidarr_client as lc  # noqa: E402
-from lossless_detect import analyze_flac  # noqa: E402
+# NOTE: lossless_detect (and its scipy dep) is imported LAZILY inside check_upgrade_result —
+# it is NOT installed in the music-machine container, only the sonic sidecar. The main upgrade
+# flow (request_album_upgrade) must not depend on it.
 
 logger = logging.getLogger(__name__)
 
@@ -87,18 +89,29 @@ def check_upgrade_result(album_id: int, *, want_title: str | None = None,
                          want_basename: str | None = None) -> str:
     """
     Return 'placed' if a real-lossless file for the wanted track is present in the album's
-    Lidarr trackfiles, else 'pending'. Uses lossless_detect.analyze_flac to confirm the import
-    is genuinely lossless (not another fake-FLAC).
+    Lidarr trackfiles, else 'pending'. Prefers lossless_detect.analyze_flac to confirm the import
+    is genuinely lossless (not a fake-FLAC); if that module/scipy is unavailable in this container,
+    falls back to trusting Lidarr's qualityProfileId=2 grab (a present .flac/.alac counts as placed).
     """
     try:
+        analyze_flac = None
+        try:
+            from lossless_detect import analyze_flac as _af  # lazy: scipy dep, sidecar-only
+            analyze_flac = _af
+        except Exception:
+            analyze_flac = None
+
         for path in lc.album_track_paths(int(album_id), BASE, API_KEY):
             if not os.path.exists(path):
                 continue
             if want_basename and Path(path).name != want_basename:
                 if not (want_title and want_title.lower() in Path(path).stem.lower()):
                     continue
-            if str(analyze_flac(path).get("verdict") or "") == "lossless":
-                return "placed"
+            if analyze_flac is not None:
+                if str(analyze_flac(path).get("verdict") or "") == "lossless":
+                    return "placed"
+            elif Path(path).suffix.lower() in (".flac", ".alac"):
+                return "placed"  # fallback: Lidarr profile-2 ensures lossless
     except Exception as exc:
         logger.debug("check_upgrade_result error for album %s: %s", album_id, exc)
     return "pending"
