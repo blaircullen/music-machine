@@ -11,6 +11,7 @@ const Tagger = lazy(() => import('./pages/Tagger'))
 const Stations = lazy(() => import('./pages/Stations'))
 const Settings = lazy(() => import('./pages/Settings'))
 const Duplicates = lazy(() => import('./pages/Duplicates'))
+const Dedup = lazy(() => import('./pages/Dedup'))
 const Trash = lazy(() => import('./pages/Trash'))
 const Player = lazy(() => import('./pages/Player'))
 const Authenticity = lazy(() => import('./pages/Authenticity'))
@@ -76,6 +77,7 @@ export default function App() {
                     <Route path="/stations" element={<Stations />} />
                     <Route path="/settings" element={<Settings />} />
                     <Route path="/duplicates" element={<Duplicates />} />
+                    <Route path="/dedup" element={<Dedup />} />
                     <Route path="/trash" element={<Trash />} />
                     <Route path="/authenticity" element={<Authenticity />} />
                     <Route path="/fingerprint" element={<FingerprintDashboard />} />
