@@ -21,6 +21,8 @@ ALLOWED_KEYS = {
     "lidarr_url",
     "lidarr_api_key",
     "lidarr_quality_profile_id",
+    "dedup_act_enabled",
+    "upgrade_paused",
 }
 
 # Read-only environment-derived values surfaced in GET response
@@ -42,6 +44,8 @@ DEFAULTS = {
     "lidarr_url": "http://10.0.0.13:8787",
     "lidarr_api_key": "2cecee10715a4c1dbe8daa16226f7ed7",
     "lidarr_quality_profile_id": "2",
+    "dedup_act_enabled": "false",
+    "upgrade_paused": "true",
 }
 
 

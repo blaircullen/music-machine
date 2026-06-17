@@ -421,6 +421,8 @@ def init_db():
             ("fp_review_threshold", "0.50"),
             ("fp_concurrency", "12"),
             ("identity_act_enabled", "false"),
+            ("dedup_act_enabled", "false"),
+            ("upgrade_paused", "true"),
         ]
         for key, value in defaults:
             db.execute(
@@ -435,6 +437,7 @@ def init_db():
         _migrate_recue_log(db)
         _migrate_freeze_upgrade_queue(db)
         _migrate_album_upgrades(db)
+        _migrate_dedup_actions(db)
 
         # Seed genre normalization map
         try:
@@ -571,6 +574,32 @@ def _migrate_album_upgrades(db):
     )
 
 
+def _migrate_dedup_actions(db):
+    """
+    U7 dedup audit log. One row per inferior copy trashed by the identity-gated dedup pass
+    (dedup_pass.py). Reversible: file_txn journals the move; this row records keep/trash linkage
+    and the pre-trash sha so a restore can be verified. Idempotent: CREATE TABLE IF NOT EXISTS.
+    """
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dedup_actions (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            keep_id        INTEGER,
+            trashed_id     INTEGER,
+            match_type     TEXT,
+            confidence     REAL,
+            sha_before     TEXT,
+            created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            rolled_back    INTEGER DEFAULT 0,
+            rolled_back_at TIMESTAMP
+        )
+        """
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_dedup_actions_trashed ON dedup_actions(trashed_id)"
+    )
+
+
 def identity_act_enabled() -> bool:
     """Return True only when the identity_act_enabled setting is explicitly 'true'.
 
@@ -585,6 +614,41 @@ def identity_act_enabled() -> bool:
         return row is not None and row[0] == "true"
     except Exception:
         return False
+
+
+def dedup_act_enabled() -> bool:
+    """Return True only when dedup_act_enabled is explicitly 'true'.
+
+    Dedicated U7-dedup gate, layered ON TOP OF identity_act_enabled — auto-trash requires
+    BOTH true (file_txn.move_chokepoint independently enforces identity_act_enabled). Reads
+    fresh each call; fails closed to False.
+    """
+    try:
+        with get_db() as db:
+            row = db.execute(
+                "SELECT value FROM settings WHERE key = 'dedup_act_enabled'"
+            ).fetchone()
+        return row is not None and row[0] == "true"
+    except Exception:
+        return False
+
+
+def upgrade_paused() -> bool:
+    """Return True (paused) UNLESS upgrade_paused is explicitly 'false'.
+
+    Inverse-polarity safety gate for the thawed upgrade runner: a missing row, any error, or
+    any value other than 'false' means PAUSED. The runner refuses to act while paused. Reads
+    fresh each call (no cache).
+    """
+    try:
+        with get_db() as db:
+            row = db.execute(
+                "SELECT value FROM settings WHERE key = 'upgrade_paused'"
+            ).fetchone()
+        # Default-paused: only the explicit string 'false' un-pauses.
+        return row is None or row[0] != "false"
+    except Exception:
+        return True
 
 
 def log_recue(

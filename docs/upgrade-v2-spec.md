@@ -108,7 +108,18 @@ Design LOCKED & Codex-validated (2 rounds). Implementation order: (P1) usenet up
 `album_upgrades` migration → (P2) U7 dedup → (P3) lazy thaw.
 - **P1: DONE + Codex-validated + DEPLOYED 2026-06-17** (`backend/upgrade_usenet.py`,
   `database._migrate_album_upgrades`). Live-verified inside the container.
-- **P2, P3: NOT built.** Detailed build guide below.
+- **P2, P3: IMPLEMENTED + Codex-AGREED (3 rounds) + tested — NOT yet deployed (2026-06-17).**
+  New: `backend/dedup_pass.py`, `backend/routes/dedup.py`, `backend/upgrade_thaw.py`,
+  `backend/tests/test_dedup_pass.py`, `backend/tests/test_upgrade_thaw.py`. Modified:
+  `database.py` (`_migrate_dedup_actions`, `dedup_act_enabled`, `upgrade_paused`),
+  `routes/settings.py` (2 keys), `routes/upgrades.py` (thaw/usenet-run/poll/status endpoints),
+  `main.py` (dedup router), `upgrade_usenet.py` (`check_upgrade_result` honors `want_title` alone).
+  Defaults SAFE: `dedup_act_enabled=false`, `upgrade_paused=true`; dedup ships REVIEW-ONLY.
+  Thawed rows use a dedicated `usenet_inflight` status (survives the startup reset). 19 new tests
+  pass; no regressions vs the locally-runnable suite. Deploy = `docker cp` the changed
+  `backend/*.py` (+`routes/*.py`) into `music-machine` + `docker restart` (approval-gated). Still
+  TODO: a frontend review page for `/api/dedup/candidates` (rebuild-gated); legacy
+  `/api/upgrades/download` still uses `shutil.move` (pre-existing MusicGrabber fallback, out of scope).
 
 ---
 

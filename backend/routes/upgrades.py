@@ -954,3 +954,48 @@ def skip_upgrade(item_id: int):
             (item_id,),
         )
     return {"ok": True, "status": "skipped"}
+
+
+# ---------------------------------------------------------------------------
+# Usenet-primary lazy thaw (Part 3) — drains the frozen queue via Lidarr, not MusicGrabber.
+# ---------------------------------------------------------------------------
+
+class ThawRequest(BaseModel):
+    n: int = Field(default=10, ge=1, le=500)
+
+
+class UsenetRunRequest(BaseModel):
+    dry_run: bool = False
+    # Small-batch safety: the Lidarr queue is already deep — never fan out many album searches at
+    # once. Processing is sequential (effective concurrency 1, stricter than upgrade_concurrency=2).
+    max_albums: int = Field(default=5, ge=1, le=25)
+
+
+@router.get("/thaw-status")
+def get_thaw_status():
+    """upgrade_queue + album_upgrades counts and the upgrade_paused gate."""
+    import upgrade_thaw
+    return upgrade_thaw.thaw_status()
+
+
+@router.post("/thaw")
+def thaw_frozen(req: ThawRequest):
+    """Flip the next N frozen rows → pending (lazy; nothing thaws automatically)."""
+    import upgrade_thaw
+    flipped = upgrade_thaw.thaw_next(req.n)
+    return {"ok": True, "thawed": flipped}
+
+
+@router.post("/usenet-run")
+def usenet_run(req: UsenetRunRequest):
+    """Drain a small batch of pending rows onto the usenet path. Real runs refuse while
+    upgrade_paused=true; dry_run previews the rollup without triggering Lidarr."""
+    import upgrade_thaw
+    return upgrade_thaw.run_usenet_upgrade_batch(dry_run=req.dry_run, max_albums=req.max_albums)
+
+
+@router.post("/usenet-poll")
+def usenet_poll():
+    """Advance in-flight album_upgrades; flip placed albums' rows to 'found' for dedup review."""
+    import upgrade_thaw
+    return upgrade_thaw.poll_thawed_upgrades()

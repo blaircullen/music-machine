@@ -104,8 +104,18 @@ def check_upgrade_result(album_id: int, *, want_title: str | None = None,
         for path in lc.album_track_paths(int(album_id), BASE, API_KEY):
             if not os.path.exists(path):
                 continue
-            if want_basename and Path(path).name != want_basename:
-                if not (want_title and want_title.lower() in Path(path).stem.lower()):
+            p = Path(path)
+            # Per-track targeting. An exact basename wins; otherwise a title-in-stem match. When
+            # ONLY want_title is supplied (the thaw poller's case — Lidarr's final basename isn't
+            # known ahead of time) the title filter must STILL apply, so a single landed track can
+            # never satisfy the whole album. With neither arg, any lossless file counts (album-level).
+            if want_basename:
+                if p.name != want_basename and not (
+                    want_title and want_title.lower() in p.stem.lower()
+                ):
+                    continue
+            elif want_title:
+                if want_title.lower() not in p.stem.lower():
                     continue
             if analyze_flac is not None:
                 if str(analyze_flac(path).get("verdict") or "") == "lossless":
