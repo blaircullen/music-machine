@@ -434,6 +434,7 @@ def init_db():
         _migrate_track_authenticity(db)
         _migrate_recue_log(db)
         _migrate_freeze_upgrade_queue(db)
+        _migrate_album_upgrades(db)
 
         # Seed genre normalization map
         try:
@@ -543,6 +544,30 @@ def _migrate_freeze_upgrade_queue(db):
     )
     db.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES ('freeze_migration_version', '1')"
+    )
+
+
+def _migrate_album_upgrades(db):
+    """
+    Album-level upgrade requests (usenet-primary, via Lidarr). Separate from the per-track
+    upgrade_queue (which stays MusicGrabber-shaped). Keyed UNIQUE(artist, album) so a request
+    is upserted, not duplicated. Idempotent: CREATE TABLE IF NOT EXISTS.
+    """
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS album_upgrades (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            artist          TEXT NOT NULL,
+            album           TEXT NOT NULL,
+            lidarr_album_id INTEGER,
+            status          TEXT NOT NULL DEFAULT 'pending',
+            attempts        INTEGER NOT NULL DEFAULT 0,
+            reason          TEXT,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(artist, album)
+        )
+        """
     )
 
 
