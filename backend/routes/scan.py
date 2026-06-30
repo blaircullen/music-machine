@@ -107,6 +107,14 @@ def run_scan(music_path: Path):
         # Phase 2: Scan — read metadata for new or changed files
         _update_status(phase="scanning", progress=0)
         scanned = 0
+        inserted = 0
+        # Commit every COMMIT_BATCH inserts so SQLite's single write lock is
+        # released periodically. scan_directory() reads tags for every file in
+        # the library; holding one open write transaction across that whole walk
+        # starves concurrent writers (e.g. the trash file_transactions INSERT)
+        # past the 30s busy_timeout → "database is locked". Re-scan is idempotent
+        # (file_path UNIQUE), so partial commits are safe.
+        COMMIT_BATCH = 500
 
         with get_db() as db:
             for meta in scan_directory(str(music_path)):
@@ -150,6 +158,9 @@ def run_scan(music_path: Path):
                         None,  # sha256 — optional
                     ),
                 )
+                inserted += 1
+                if inserted % COMMIT_BATCH == 0:
+                    db.commit()
 
         # Mark deleted files
         _update_status(phase="scanning", current_file="Checking for removed files...")
@@ -157,11 +168,18 @@ def run_scan(music_path: Path):
             active_paths = db.execute(
                 "SELECT id, file_path FROM tracks WHERE status = 'active'"
             ).fetchall()
+            # Same write-lock concern as Phase 2: Path.exists() stat()s every
+            # active track (over NFS for /music), so commit periodically to avoid
+            # holding the write lock across the whole loop.
+            checked = 0
             for row in active_paths:
                 if not Path(row["file_path"]).exists():
                     db.execute(
                         "UPDATE tracks SET status = 'deleted' WHERE id = ?", (row["id"],)
                     )
+                checked += 1
+                if checked % COMMIT_BATCH == 0:
+                    db.commit()
 
         # Phase 3: Metadata-based dedup (fast — no fingerprints yet)
         _update_status(phase="analyzing", progress=0, current_file="Analyzing duplicates...")
