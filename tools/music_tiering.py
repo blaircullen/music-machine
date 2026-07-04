@@ -243,17 +243,35 @@ def classify_cold(albums):
     return cold
 
 
-def decide_migration_unit(info, dir_to_keys):
+def decide_migration_unit(info, dir_to_keys, this_key):
     """Whole-directory move if this album's tracks live in exactly one directory
-    AND that directory belongs exclusively to this album (no other album's
-    tracks are mixed in) — safe, keeps companion files (art, .cue, etc.)
-    together. Otherwise (flat multi-album dump, or tracks scattered across
-    dirs) fall back to moving this album's specific files individually,
-    leaving any sibling files belonging to OTHER albums untouched."""
+    AND no OTHER album's tracks live anywhere in that directory's subtree —
+    safe, keeps companion files (art, .cue, etc.) together. Otherwise (flat
+    multi-album dump, tracks scattered across dirs, or a nested subdirectory
+    belonging to a different album) fall back to moving this album's specific
+    files individually, leaving any sibling files belonging to OTHER albums
+    untouched.
+
+    The subtree check (not just the immediate directory) matters because
+    cp -a is recursive: confirmed 2026-07-03 that checking only the immediate
+    directory let a dir-mode move ("Handel's Messiah Complete", tracks placed
+    directly in /volume3/music/London Philharmonic Orchestra/) silently
+    scoop up unrelated subdirectories nested beneath it (The 99 Most Essential
+    Classical Pieces in Movies/, belonging to a different album entirely,
+    "The 50 Greatest Pieces of Classical Music"), corrupting that other
+    album's later per-file migration. 3 files were affected library-wide;
+    recovered from the parked original. See tools/manifests/ + git history
+    for the incident writeup.
+    """
     dirs_used = {canonical_album_dir(t["file"]) for t in info["tracks"]}
     if len(dirs_used) == 1:
         d = next(iter(dirs_used))
-        if len(dir_to_keys[d]) == 1:
+        nested_other_keys = {
+            key for other_dir, keys in dir_to_keys.items()
+            for key in keys
+            if key != this_key and (other_dir == d or other_dir.startswith(d + "/"))
+        }
+        if not nested_other_keys:
             return {"kind": "dir", "beast_paths": [d]}
     return {"kind": "files", "beast_paths": sorted({t["file"] for t in info["tracks"]})}
 
@@ -413,7 +431,7 @@ def build_manifest(url, token, target_free_gb):
 
     pre_candidates = []
     for album_key, info in cold:
-        unit = decide_migration_unit(info, dir_to_keys)
+        unit = decide_migration_unit(info, dir_to_keys, album_key)
         try:
             nas_hot_paths = [beast_to_nas_path(p, NAS_HOT_PREFIX) for p in unit["beast_paths"]]
             nas_cold_paths = [beast_to_nas_path(p, NAS_COLD_PREFIX) for p in unit["beast_paths"]]
@@ -704,6 +722,7 @@ def main():
         candidates = candidates[:1]
         print("[canary] migrating exactly one album")
 
+    ssh_run(f"mkdir -p {shq(NAS_COLD_PREFIX)}")  # df needs the path to exist; harmless if already there
     free_bytes = nas_free_bytes(NAS_COLD_PREFIX)
     needed_bytes = sum(c["size_bytes"] for c in candidates)
     if needed_bytes > free_bytes:
