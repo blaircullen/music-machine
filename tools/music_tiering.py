@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """
-Plex-play-data-driven music tiering: volume3 (SSD, hot) -> volume2 (HDD, cold).
+Plex-star-rating-driven music tiering: volume3 (SSD, hot) -> volume2 (HDD, cold).
+
+(Originally designed around Plex play-recency; switched to explicit star
+ratings 2026-07-03 after a dry run showed near-continuous PoolPi/Plexamp
+shuffle playback makes "last played" meaningless as a hot/cold signal —
+virtually the whole library gets touched by rotation within any window.
+Star ratings are explicit and deliberate instead.)
 
 Runs FROM Beast (has Plex API + NFS-mounted view of volume3 for cheap stat
 reads), but every filesystem MUTATION (copy, checksum, rename, symlink) is
@@ -79,8 +85,10 @@ NAS_COLD_PREFIX = "/volume2/music-cold"    # destination root, NAS-native path
 
 NAS_SSH_HOST = "sunygxc@10.0.0.7"
 
-COLD_MONTHS_NEVER_PLAYED = 12   # viewCount==0 and added longer ago than this -> cold
-COLD_MONTHS_SINCE_PLAYED = 6    # last played longer ago than this -> cold
+STAR_HOT_THRESHOLD = 6   # Plex userRating is 0-10 in 2pt/star increments (2=1*,4=2*,6=3*,...);
+                          # an album is "hot" (stays on volume3) if ANY track has >= 3 stars.
+                          # Unstarred (no rating) or 1-2 star tracks count toward "cold" if no
+                          # other track in the album clears the bar.
 
 DISC_SUBDIR_RE = re.compile(r"^(disc|cd|d)\s*\d+$", re.IGNORECASE)
 
@@ -128,9 +136,9 @@ def fetch_all_tracks(url, token, page_size=500):
             break
         new_in_batch = 0
         for t in batch:
-            view_count = int(t.get("viewCount", "0"))
-            last_viewed = t.get("lastViewedAt")
+            rating = t.get("userRating")
             added_at = t.get("addedAt")
+            album_key = t.get("parentRatingKey")
             for part in t.findall("Media/Part"):
                 f = part.get("file")
                 if f and f not in seen_files:
@@ -138,9 +146,17 @@ def fetch_all_tracks(url, token, page_size=500):
                     new_in_batch += 1
                     tracks.append({
                         "file": f,
-                        "viewCount": view_count,
-                        "lastViewedAt": int(last_viewed) if last_viewed else None,
+                        "userRating": float(rating) if rating else 0.0,
                         "addedAt": int(added_at) if added_at else None,
+                        # Plex's OWN album grouping (parentRatingKey), not a directory guess —
+                        # essential because this library isn't uniformly organized: some artists
+                        # have clean one-album-per-folder layouts, others dump many different
+                        # albums' tracks flat in one artist folder (verified 2026-07-03, e.g.
+                        # /volume3/music/Neil Young/ has 423 tracks spanning several real albums
+                        # with no album subdirectory at all).
+                        "album_key": album_key,
+                        "album_title": t.get("parentTitle"),
+                        "artist_title": t.get("grandparentTitle"),
                     })
         start += page_size
         total = int(root.get("totalSize", start))
@@ -158,24 +174,23 @@ def fetch_all_tracks(url, token, page_size=500):
 
 
 def precondition_check(url, token, skip=False):
-    """Go/no-go gate: is Plex's play data plausible at all? (design v2 §Precondition gate)"""
+    """Go/no-go gate: does this library actually have meaningful star-rating data?
+    (Switched from Plex play-recency to explicit star ratings 2026-07-03 — with
+    near-continuous shuffle playback via PoolPi/Plexamp, 'last played' couldn't
+    distinguish loved music from background rotation; almost nothing qualified
+    as 'played but stale' even at a 6-month window. Star ratings are an explicit,
+    deliberate signal instead.)"""
     root = plex_get(
         url, token, f"/library/sections/{MUSIC_SECTION_ID}/all",
-        {"type": "10", "sort": "viewCount:desc", "X-Plex-Container-Start": 0, "X-Plex-Container-Size": 20},
+        {"type": "10", "userRating>>": "0", "X-Plex-Container-Start": 0, "X-Plex-Container-Size": 0},
     )
-    top = root.findall("Track")
-    view_counts = [int(t.get("viewCount", "0")) for t in top]
-    last_viewed = [int(t.get("lastViewedAt")) for t in top if t.get("lastViewedAt")]
-    now = time.time()
-    recent_30d = [ts for ts in last_viewed if (now - ts) < 30 * 86400]
-    ok = bool(view_counts) and max(view_counts) > 0 and len(recent_30d) >= 1
-    print(f"[precondition] top-20 by viewCount: max={max(view_counts) if view_counts else 0}, "
-          f"recently-played(<=30d)={len(recent_30d)}/20 -> {'PASS' if ok else 'FAIL'}")
+    rated_count = int(root.get("totalSize", "0"))
+    print(f"[precondition] {rated_count} tracks have a star rating set")
+    ok = rated_count >= 20
     if not ok and not skip:
-        sys.exit("Precondition check failed: Plex play data looks empty/stale (no plays in the "
-                 "last 30 days among the 20 most-played tracks). This could mean Plex isn't the "
-                 "primary playback client, OR just that nobody's listened recently — re-run with "
-                 "--skip-precondition-check if you're confident the data is still meaningful.")
+        sys.exit(f"Precondition check failed: only {rated_count} rated tracks found. With this few, "
+                 "'unstarred -> cold' would classify almost the entire library as cold. Rate more "
+                 "tracks first, or re-run with --skip-precondition-check if that's genuinely intended.")
 
 
 # ---- Classification -------------------------------------------------------
@@ -191,33 +206,56 @@ def canonical_album_dir(file_path):
     return str(parent)
 
 
-def group_by_album(tracks):
-    albums = defaultdict(lambda: {"tracks": [], "max_last_viewed": None, "min_added": None, "any_played": False})
+def build_album_groups(tracks):
+    """Group by Plex's own album identity (album_key), not by directory — a
+    directory guess breaks the moment one folder holds more than one real
+    album's tracks (confirmed present in this library). Also builds
+    dir_to_keys, mapping each canonical directory to the set of album_keys
+    whose tracks live there, used to decide per-album whether its directory
+    is safe to move wholesale or whether only its specific files should move.
+    """
+    albums = defaultdict(lambda: {
+        "tracks": [], "max_rating": 0.0, "min_added": None,
+        "album_title": None, "artist_title": None,
+    })
+    dir_to_keys = defaultdict(set)
     for t in tracks:
-        a = albums[canonical_album_dir(t["file"])]
+        key = t["album_key"] or f"__no_album_key__:{canonical_album_dir(t['file'])}"
+        a = albums[key]
         a["tracks"].append(t)
-        if t["viewCount"] > 0:
-            a["any_played"] = True
-        if t["lastViewedAt"]:
-            a["max_last_viewed"] = max(a["max_last_viewed"] or 0, t["lastViewedAt"])
+        a["max_rating"] = max(a["max_rating"], t["userRating"])
+        a["album_title"] = a["album_title"] or t["album_title"]
+        a["artist_title"] = a["artist_title"] or t["artist_title"]
         if t["addedAt"]:
             a["min_added"] = min(a["min_added"] or t["addedAt"], t["addedAt"])
-    return albums
+        dir_to_keys[canonical_album_dir(t["file"])].add(key)
+    return albums, dir_to_keys
 
 
 def classify_cold(albums):
-    now = time.time()
-    never_played_cutoff = now - COLD_MONTHS_NEVER_PLAYED * 30 * 86400
-    since_played_cutoff = now - COLD_MONTHS_SINCE_PLAYED * 30 * 86400
+    """An album is cold if NO track in it clears the 3-star bar — i.e. every
+    track is unstarred or rated 1-2 stars. One highly-rated track protects the
+    whole album from migration."""
     cold = []
-    for album_dir, info in albums.items():
-        if not info["any_played"]:
-            if info["min_added"] and info["min_added"] < never_played_cutoff:
-                cold.append((album_dir, info))
-        else:
-            if info["max_last_viewed"] and info["max_last_viewed"] < since_played_cutoff:
-                cold.append((album_dir, info))
+    for album_key, info in albums.items():
+        if info["max_rating"] < STAR_HOT_THRESHOLD:
+            cold.append((album_key, info))
     return cold
+
+
+def decide_migration_unit(info, dir_to_keys):
+    """Whole-directory move if this album's tracks live in exactly one directory
+    AND that directory belongs exclusively to this album (no other album's
+    tracks are mixed in) — safe, keeps companion files (art, .cue, etc.)
+    together. Otherwise (flat multi-album dump, or tracks scattered across
+    dirs) fall back to moving this album's specific files individually,
+    leaving any sibling files belonging to OTHER albums untouched."""
+    dirs_used = {canonical_album_dir(t["file"]) for t in info["tracks"]}
+    if len(dirs_used) == 1:
+        d = next(iter(dirs_used))
+        if len(dir_to_keys[d]) == 1:
+            return {"kind": "dir", "beast_paths": [d]}
+    return {"kind": "files", "beast_paths": sorted({t["file"] for t in info["tracks"]})}
 
 
 def _under_root(path, root):
@@ -242,9 +280,28 @@ def beast_to_nas_path(beast_album_dir, prefix_root):
 
 
 def already_migrated(nas_hot_path):
-    """Idempotency check: is this album dir already a symlink from a prior run?"""
+    """Idempotency check: is this album dir already a symlink from a prior run?
+    Single-path version — kept for use in migrate_album's execute-time re-check."""
     r = ssh_run(f"test -L {shq(nas_hot_path)}", check=False)
     return r.returncode == 0
+
+
+def already_migrated_batch(paths):
+    """Batched idempotency check: one ssh round-trip for the whole candidate set
+    instead of one per album (same rationale as nas_dir_sizes_batch)."""
+    if not paths:
+        return set()
+    remote_script = (
+        "while IFS= read -r -d '' p; do "
+        "test -L \"$p\" && printf '%s\\0' \"$p\"; "
+        "done; true"
+    )
+    proc = subprocess.run(
+        ["ssh", NAS_SSH_HOST, remote_script],
+        input="\0".join(paths) + "\0",
+        capture_output=True, text=True,
+    )
+    return {p for p in proc.stdout.split("\0") if p}
 
 
 # ---- SSH / NAS execution ---------------------------------------------------
@@ -262,12 +319,44 @@ def ssh_run(remote_cmd, check=True, capture=True):
 
 
 def nas_dir_size(path):
-    """Cheap size-only pass — used during manifest build for every candidate.
-    No checksumming here; that's reserved for migrate_album (execute time)."""
+    """Cheap size-only pass for a single directory. No checksumming — that's
+    reserved for migrate_album (execute time)."""
     r = ssh_run(
         f"find {shq(path)} -type f -printf '%s\\n' 2>/dev/null | awk '{{s+=$1}} END{{print s+0}}'"
     )
     return int(r.stdout.strip() or "0")
+
+
+def nas_dir_sizes_batch(paths):
+    """Size every candidate in ONE ssh round-trip instead of one-per-album — with
+    a star-rating-based cold set likely covering most of the library (thousands
+    of albums, not the small hand-picked set play-recency gave us), one SSH
+    handshake per album would be the exact 'thousands of round trips' cost GLM
+    and DeepSeek flagged against the size-per-candidate approach. Paths are
+    piped over stdin (NUL-separated) rather than passed as argv to avoid
+    ARG_MAX limits at this scale."""
+    if not paths:
+        return {}
+    remote_script = (
+        "while IFS= read -r -d '' p; do "
+        "sz=$(find \"$p\" -type f -printf '%s\\n' 2>/dev/null | awk '{s+=$1} END{print s+0}'); "
+        "printf '%s\\t%s\\0' \"$sz\" \"$p\"; "
+        "done"
+    )
+    proc = subprocess.run(
+        ["ssh", NAS_SSH_HOST, remote_script],
+        input="\0".join(paths) + "\0",
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"batch sizing failed: {proc.stderr}")
+    sizes = {}
+    for record in proc.stdout.split("\0"):
+        if not record:
+            continue
+        sz, _, path = record.partition("\t")
+        sizes[path] = int(sz)
+    return sizes
 
 
 def nas_dir_md5_multiset(path):
@@ -288,6 +377,13 @@ def nas_dir_md5_multiset(path):
     return md5s
 
 
+def nas_file_md5(path):
+    """Checksum of a single file — used by the per-file migration path (files-mode
+    candidates), where nas_dir_md5_multiset's whole-directory scan doesn't apply."""
+    r = ssh_run(f"md5sum {shq(path)} 2>/dev/null")
+    return r.stdout.split()[0] if r.stdout.strip() else None
+
+
 def nas_free_bytes(path):
     r = ssh_run(f"df --output=avail -B1 {shq(path)} | tail -1")
     return int(r.stdout.strip())
@@ -296,42 +392,70 @@ def nas_free_bytes(path):
 # ---- Active-session guard ---------------------------------------------------
 
 def currently_playing_nas_paths(url, token):
+    """Returns (playing_dirs, playing_files) as NAS-native paths — dirs for the
+    whole-directory migration mode, individual files for the per-file mode."""
     root = plex_get(url, token, "/status/sessions", {})
-    playing = set()
+    playing_dirs, playing_files = set(), set()
     for v in root.findall(".//Part"):
         f = v.get("file")
         if f and f.startswith(BEAST_MOUNT_PREFIX):
-            playing.add(beast_to_nas_path(canonical_album_dir(f), NAS_HOT_PREFIX))
-    return playing
+            playing_dirs.add(beast_to_nas_path(canonical_album_dir(f), NAS_HOT_PREFIX))
+            playing_files.add(beast_to_nas_path(f, NAS_HOT_PREFIX))
+    return playing_dirs, playing_files
 
 
 # ---- Manifest build (dry run) ---------------------------------------------------
 
 def build_manifest(url, token, target_free_gb):
     tracks = fetch_all_tracks(url, token)
-    albums = group_by_album(tracks)
+    albums, dir_to_keys = build_album_groups(tracks)
     cold = classify_cold(albums)
 
-    candidates = []
-    for album_dir, info in cold:
+    pre_candidates = []
+    for album_key, info in cold:
+        unit = decide_migration_unit(info, dir_to_keys)
         try:
-            nas_hot = beast_to_nas_path(album_dir, NAS_HOT_PREFIX)
+            nas_hot_paths = [beast_to_nas_path(p, NAS_HOT_PREFIX) for p in unit["beast_paths"]]
+            nas_cold_paths = [beast_to_nas_path(p, NAS_COLD_PREFIX) for p in unit["beast_paths"]]
         except ValueError:
             continue
-        if already_migrated(nas_hot):
+        pre_candidates.append((album_key, info, unit["kind"], nas_hot_paths, nas_cold_paths))
+
+    all_paths = [p for _, _, _, hot_paths, _ in pre_candidates for p in hot_paths]
+    already = already_migrated_batch(all_paths)
+
+    candidates = []
+    for album_key, info, kind, nas_hot_paths, nas_cold_paths in pre_candidates:
+        # fully migrated already (every path is a symlink) -> skip entirely; a
+        # PARTIALLY migrated files-mode candidate is kept, migrate_album skips
+        # the already-done files and only processes what's left.
+        if all(p in already for p in nas_hot_paths):
             continue
         candidates.append({
-            "beast_path": album_dir,
-            "nas_hot_path": nas_hot,
-            "nas_cold_path": beast_to_nas_path(album_dir, NAS_COLD_PREFIX),
-            "any_played": info["any_played"],
-            "max_last_viewed": info["max_last_viewed"],
+            "album_key": album_key,
+            "album_title": info["album_title"],
+            "artist_title": info["artist_title"],
+            "kind": kind,
+            "nas_hot_paths": nas_hot_paths,
+            "nas_cold_paths": nas_cold_paths,
+            "max_rating": info["max_rating"],
             "min_added": info["min_added"],
             "track_count": len(info["tracks"]),
         })
 
-    # coldest first: never-played oldest-added first, then longest-since-played
-    candidates.sort(key=lambda c: (c["any_played"], -(c["min_added"] or 0), (c["max_last_viewed"] or 0)))
+    # every candidate here already failed the star-rating bar equally (binary, not
+    # graduated), so there's no "coldest first" tiebreak — size candidates up front
+    # and take biggest-first, so a target-free-space run reclaims space in the
+    # fewest moves rather than nibbling at small singles first. Batched into one
+    # SSH round-trip since this set is likely most of the library now, not a
+    # small hand-picked one. (nas_dir_sizes_batch's `find <path> -type f` works
+    # fine on an individual file path too, so this covers both dir- and
+    # files-mode candidates uniformly.)
+    all_hot_paths = [p for c in candidates for p in c["nas_hot_paths"]]
+    sizes = nas_dir_sizes_batch(all_hot_paths)
+    for c in candidates:
+        c["size_bytes"] = sum(sizes.get(p, 0) for p in c["nas_hot_paths"])
+    candidates.sort(key=lambda c: c["size_bytes"], reverse=True)
 
     target_bytes = target_free_gb * (1024 ** 3) if target_free_gb else None
     running_total = 0
@@ -339,7 +463,6 @@ def build_manifest(url, token, target_free_gb):
     for c in candidates:
         if target_bytes is not None and running_total >= target_bytes:
             break
-        c["size_bytes"] = nas_dir_size(c["nas_hot_path"])
         running_total += c["size_bytes"]
         selected.append(c)
 
@@ -360,38 +483,22 @@ def build_manifest(url, token, target_free_gb):
 
 # ---- Migration (execute) ---------------------------------------------------
 
-def migrate_album(url, token, candidate):
-    hot, cold = candidate["nas_hot_path"], candidate["nas_cold_path"]
+def _migrate_one_dir(url, token, hot, cold, playing_dirs):
+    if hot in playing_dirs:
+        print(f"[skip] currently playing: {hot}")
+        return "skipped-playing"
 
-    # Defense in depth: re-validate containment even if this candidate came from
-    # a --manifest file on disk (stale or hand-edited), since hot/cold paths are
-    # about to be used in rm -rf / mv / ln -s. (Codex finding: a bad manifest
-    # entry could otherwise mutate outside the intended trees.)
-    if not _under_root(hot, NAS_HOT_PREFIX) or not _under_root(cold, NAS_COLD_PREFIX):
-        raise ValueError(f"refusing to touch out-of-bounds path: hot={hot} cold={cold}")
-
-    # Hard guard: source must still be a real directory. If it's already a
-    # symlink (prior run migrated it, or an overlapping run got here first),
-    # do NOT touch it — cp -a on a symlink would copy garbage over the cold
-    # data and destroy the album (the DeepSeek data-loss finding).
     is_dir = ssh_run(f"test -d {shq(hot)} -a ! -L {shq(hot)}", check=False).returncode == 0
     if not is_dir:
         print(f"[skip] not a plain directory (already migrated or missing): {hot}")
         return "skipped-not-a-dir"
 
-    # re-check active sessions immediately before touching this specific album
-    if hot in currently_playing_nas_paths(url, token):
-        print(f"[skip] currently playing: {hot}")
-        return "skipped-playing"
-
     # stale cold copy from a previously-aborted run: wipe rather than nest into it
-    cold_exists = ssh_run(f"test -e {shq(cold)}", check=False).returncode == 0
-    if cold_exists:
+    if ssh_run(f"test -e {shq(cold)}", check=False).returncode == 0:
         print(f"[warn] stale cold destination found, removing before retry: {cold}")
         ssh_run(f"rm -rf {shq(cold)}")
 
-    cold_parent = str(Path(cold).parent)
-    ssh_run(f"mkdir -p {shq(cold_parent)}")
+    ssh_run(f"mkdir -p {shq(str(Path(cold).parent))}")
     ssh_run(f"cp -a {shq(hot)} {shq(cold)}")
 
     hot_md5 = nas_dir_md5_multiset(hot)
@@ -400,55 +507,138 @@ def migrate_album(url, token, candidate):
         ssh_run(f"rm -rf {shq(cold)}", check=False)
         raise RuntimeError(f"checksum mismatch after copy, aborting this album: {hot}")
 
-    # re-check active sessions again right before the swap (copy can take a while for big albums)
-    if hot in currently_playing_nas_paths(url, token):
+    # re-check right before the swap — copy can take a while for a big directory
+    if hot in _dirs_playing_now(url, token):
         print(f"[skip] became active during copy, leaving original untouched: {hot}")
         ssh_run(f"rm -rf {shq(cold)}", check=False)
         return "skipped-playing"
 
     parked = f"{hot}.parked-{int(time.time())}"
-    ssh_run(f"mv {shq(hot)} {shq(parked)}")          # instantaneous local rename, original fully intact
-    ssh_run(f"ln -s {shq(cold)} {shq(hot)}")          # symlink now live at the original path
+    ssh_run(f"mv {shq(hot)} {shq(parked)}")
+    ssh_run(f"ln -s {shq(cold)} {shq(hot)}")
 
-    # sanity check: symlink resolves and at least one regular file is readable through it —
-    # NUL-safe, no unquoted shell expansion of a filename (the DeepSeek "$(ls ...)" bug)
-    sanity = ssh_run(
-        f"find -L {shq(hot)} -maxdepth 1 -type f -print -quit", check=False
-    )
+    sanity = ssh_run(f"find -L {shq(hot)} -maxdepth 1 -type f -print -quit", check=False)
     if sanity.returncode != 0 or not sanity.stdout.strip():
-        # symlink didn't resolve to anything readable — restore the parked original immediately
         ssh_run(f"rm -f {shq(hot)}", check=False)
         ssh_run(f"mv {shq(parked)} {shq(hot)}", check=False)
         raise RuntimeError(f"post-swap sanity check failed, restored original: {hot}")
 
-    print(f"[migrated] {hot} -> {cold} ({sum(1 for _ in cold_md5)} files), original parked at {parked}")
+    print(f"[migrated] {hot} -> {cold} ({len(cold_md5)} files), original parked at {parked}")
     return "migrated"
+
+
+def _dirs_playing_now(url, token):
+    dirs, _ = currently_playing_nas_paths(url, token)
+    return dirs
+
+
+def _migrate_one_file(url, token, hot, cold, playing_files):
+    if hot in playing_files:
+        print(f"[skip] currently playing: {hot}")
+        return "skipped-playing"
+
+    # Hard guard, file-mode equivalent of the dir-mode symlink check: if it's
+    # already a symlink, either a prior run finished this exact file or an
+    # overlapping run got here first — don't touch it either way.
+    is_file = ssh_run(f"test -f {shq(hot)} -a ! -L {shq(hot)}", check=False).returncode == 0
+    if not is_file:
+        return "skipped-not-a-file"
+
+    if ssh_run(f"test -e {shq(cold)}", check=False).returncode == 0:
+        print(f"[warn] stale cold destination found, removing before retry: {cold}")
+        ssh_run(f"rm -f {shq(cold)}")
+
+    ssh_run(f"mkdir -p {shq(str(Path(cold).parent))}")
+    ssh_run(f"cp -a {shq(hot)} {shq(cold)}")
+
+    hot_md5, cold_md5 = nas_file_md5(hot), nas_file_md5(cold)
+    if hot_md5 is None or hot_md5 != cold_md5:
+        ssh_run(f"rm -f {shq(cold)}", check=False)
+        raise RuntimeError(f"checksum mismatch after copy, aborting this file: {hot}")
+
+    _, playing_files_now = currently_playing_nas_paths(url, token)
+    if hot in playing_files_now:
+        print(f"[skip] became active during copy, leaving original untouched: {hot}")
+        ssh_run(f"rm -f {shq(cold)}", check=False)
+        return "skipped-playing"
+
+    parked = f"{hot}.parked-{int(time.time())}"
+    ssh_run(f"mv {shq(hot)} {shq(parked)}")
+    ssh_run(f"ln -s {shq(cold)} {shq(hot)}")
+
+    sanity = ssh_run(f"test -f {shq(hot)}", check=False)
+    if sanity.returncode != 0:
+        ssh_run(f"rm -f {shq(hot)}", check=False)
+        ssh_run(f"mv {shq(parked)} {shq(hot)}", check=False)
+        raise RuntimeError(f"post-swap sanity check failed, restored original: {hot}")
+
+    print(f"[migrated] {hot} -> {cold}, original parked at {parked}")
+    return "migrated"
+
+
+def migrate_album(url, token, candidate):
+    """Dispatches to whole-directory or per-file migration depending on how
+    decide_migration_unit classified this album at manifest-build time. Files
+    mode can partially succeed (some files migrated, others skipped/errored)
+    since each file is an independent atomic unit — that's fine and expected
+    for a flat multi-album directory."""
+    hot_paths, cold_paths = candidate["nas_hot_paths"], candidate["nas_cold_paths"]
+
+    # Defense in depth: re-validate containment even from a --manifest file on
+    # disk (stale or hand-edited), since these paths feed rm -rf/mv/ln -s.
+    for p in hot_paths:
+        if not _under_root(p, NAS_HOT_PREFIX):
+            raise ValueError(f"refusing to touch out-of-bounds hot path: {p}")
+    for p in cold_paths:
+        if not _under_root(p, NAS_COLD_PREFIX):
+            raise ValueError(f"refusing to touch out-of-bounds cold path: {p}")
+
+    playing_dirs, playing_files = currently_playing_nas_paths(url, token)
+
+    if candidate["kind"] == "dir":
+        return _migrate_one_dir(url, token, hot_paths[0], cold_paths[0], playing_dirs)
+
+    # files mode: migrate each file independently, aggregate outcomes
+    outcomes = defaultdict(int)
+    for hot, cold in zip(hot_paths, cold_paths):
+        try:
+            outcomes[_migrate_one_file(url, token, hot, cold, playing_files)] += 1
+        except Exception as e:
+            print(f"[error] {hot}: {e}")
+            outcomes["error"] += 1
+    print(f"[files-album] {candidate.get('artist_title')} / {candidate.get('album_title')}: {dict(outcomes)}")
+    if outcomes.get("migrated", 0) > 0:
+        return "migrated"
+    if outcomes.get("error", 0) > 0:
+        return "error"
+    return "skipped-not-a-file" if outcomes.get("skipped-not-a-file") else "skipped-playing"
 
 
 PARKED_SUFFIX_RE = re.compile(r"^(?P<original>.+)\.parked-(?P<ts>\d+)$")
 
 
 def cleanup_parked(older_than_days):
-    """Delete parked originals older than N days.
+    """Delete parked originals (both whole-directory and individual-file mode)
+    older than N days.
 
     Two fixes over the first cut (Codex finding): mv/rename preserves the
-    directory's original mtime, so `find -mtime` measures how old the ALBUM's
-    *content* is — which for a cold, unplayed album is already old on day one,
-    meaning it could get deleted immediately instead of after a grace period.
-    Age is now parsed from the `.parked-<epoch>` timestamp embedded in the
-    directory name instead. Also: a parked dir is only deleted once its
-    corresponding un-parked path is confirmed to be a symlink resolving into
-    NAS_COLD_PREFIX (i.e. the migration actually completed) — otherwise it's
-    left alone and flagged for manual review.
+    original mtime, so `find -mtime` measures how old the album's *content*
+    is — which for a cold, unplayed album is already old on day one, meaning
+    it could get deleted immediately instead of after a grace period. Age is
+    now parsed from the `.parked-<epoch>` timestamp embedded in the name
+    instead. Also: a parked entry is only deleted once its corresponding
+    un-parked path is confirmed to be a symlink resolving into NAS_COLD_PREFIX
+    (i.e. the migration actually completed) — otherwise it's left alone and
+    flagged for manual review.
     """
-    out = ssh_run(f"find {shq(NAS_HOT_PREFIX)} -type d -name '*.parked-*'").stdout
+    out = ssh_run(f"find {shq(NAS_HOT_PREFIX)} \\( -type d -o -type f \\) -name '*.parked-*'").stdout
     now = time.time()
     candidates = [d for d in out.strip().splitlines() if d and _under_root(d, NAS_HOT_PREFIX)]
-    print(f"[cleanup] {len(candidates)} parked dirs found")
+    print(f"[cleanup] {len(candidates)} parked entries found")
     for d in candidates:
         m = PARKED_SUFFIX_RE.match(d)
         if not m:
-            print(f"  [skip] unrecognized parked-dir name format: {d}")
+            print(f"  [skip] unrecognized parked-entry name format: {d}")
             continue
         age_days = (now - int(m.group("ts"))) / 86400
         if age_days < older_than_days:
@@ -486,7 +676,7 @@ def main():
     ap.add_argument("--canary", action="store_true", help="only migrate the single coldest candidate, then stop")
     ap.add_argument("--manifest", type=str, help="re-use an existing manifest instead of rebuilding")
     ap.add_argument("--cleanup-parked", type=int, metavar="DAYS", help="delete parked originals older than DAYS and exit")
-    ap.add_argument("--skip-precondition-check", action="store_true", help="bypass the Plex-play-data sanity gate")
+    ap.add_argument("--skip-precondition-check", action="store_true", help="bypass the star-rating-data sanity gate")
     args = ap.parse_args()
 
     url, token = load_plex_env()
@@ -525,7 +715,7 @@ def main():
         try:
             outcome = migrate_album(url, token, c)
         except Exception as e:
-            print(f"[error] {c['nas_hot_path']}: {e}")
+            print(f"[error] {c['nas_hot_paths']}: {e}")
             outcome = "error"
         results[outcome] += 1
 
