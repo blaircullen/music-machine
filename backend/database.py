@@ -438,6 +438,7 @@ def init_db():
         _migrate_freeze_upgrade_queue(db)
         _migrate_album_upgrades(db)
         _migrate_dedup_actions(db)
+        _migrate_segmentation(db)
 
         # Seed genre normalization map
         try:
@@ -598,6 +599,117 @@ def _migrate_dedup_actions(db):
     db.execute(
         "CREATE INDEX IF NOT EXISTS idx_dedup_actions_trashed ON dedup_actions(trashed_id)"
     )
+
+
+def _migrate_segmentation(db):
+    """
+    Live & Holiday library-split segmentation schema (docs/live-holiday-split-spec.md §3).
+
+    Adds three additive tables (review queue, move ledger, playlist snapshot), an additive
+    `tracks.move_status` claim column (PRAGMA-guarded — never recreate `tracks`), and two
+    fail-closed kill-switch settings seeded 'false'. Idempotent: CREATE TABLE IF NOT EXISTS +
+    ADD COLUMN only when absent. Wired into init_db() (an unwired _migrate_* silently never
+    runs — this repo's documented #1 gotcha).
+    """
+    db.executescript(
+        """
+        -- Review queue: ambiguous / non-auto matches await explicit approval.
+        CREATE TABLE IF NOT EXISTS segmentation_candidates (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_id          INTEGER REFERENCES tracks(id),
+            source_path       TEXT,
+            dest_path         TEXT,
+            target_library    TEXT,        -- 'live' | 'holiday'
+            matched_field     TEXT,        -- 'title' | 'album' | 'genre'
+            matched_pattern   TEXT,        -- the rule/marker that fired
+            confidence_tier   TEXT,        -- 'auto' | 'review'
+            confidence_reason TEXT,        -- human-readable why
+            detected_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            status            TEXT DEFAULT 'proposed'
+                              -- 'proposed' | 'approved' | 'rejected' | 'moved'
+        );
+
+        -- Move ledger (append-only, reversible).
+        CREATE TABLE IF NOT EXISTS segmentation_moves (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_id          INTEGER,
+            source_path       TEXT,
+            dest_path         TEXT,
+            target_library    TEXT,        -- 'live' | 'holiday'
+            matched_pattern   TEXT,
+            confidence_tier   TEXT,        -- 'auto' | 'reviewed'
+            old_rating_key    TEXT,        -- Plex ratingKey in section 5 before move
+            new_rating_key    TEXT,        -- Plex ratingKey in target section after rescan
+            sha_before        TEXT,
+            sha_after         TEXT,
+            run_id            TEXT,        -- groups a sweep/bulk run (for whole-run undo)
+            state             TEXT DEFAULT 'pending',   -- 'pending' | 'done'
+            moved_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            rolled_back       INTEGER DEFAULT 0,
+            rolled_back_at    TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_segmoves_run ON segmentation_moves(run_id);
+        CREATE INDEX IF NOT EXISTS idx_segmoves_track ON segmentation_moves(track_id);
+
+        -- Playlist membership snapshot, captured before a run's moves.
+        CREATE TABLE IF NOT EXISTS segmentation_playlist_snapshot (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id              TEXT,
+            playlist_rating_key TEXT,
+            playlist_title      TEXT,
+            track_id            INTEGER,
+            old_rating_key      TEXT,
+            file_path           TEXT,      -- match key used to re-resolve after move
+            repaired            INTEGER DEFAULT 0,   -- 1 = re-added post-move
+            repair_error        TEXT,
+            snapshot_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_segsnap_run ON segmentation_playlist_snapshot(run_id);
+        """
+    )
+
+    # Additive optimistic move-claim column on tracks (never recreate tracks).
+    cursor = db.execute("PRAGMA table_info(tracks)")
+    track_cols = {row[1] for row in cursor.fetchall()}
+    if "move_status" not in track_cols:
+        db.execute("ALTER TABLE tracks ADD COLUMN move_status TEXT")  # NULL | 'claiming' | 'moving'
+
+    # Fail-closed kill-switch settings, seeded 'false'.
+    for key in ("segmentation_move_enabled", "segmentation_sweep_enabled"):
+        db.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES (?, 'false')",
+            (key,),
+        )
+
+
+def segmentation_move_enabled() -> bool:
+    """True only when segmentation_move_enabled is explicitly 'true'. Fails closed.
+
+    Gates any physical auto-move. Reads fresh from DB each call (no cache).
+    """
+    try:
+        with get_db() as db:
+            row = db.execute(
+                "SELECT value FROM settings WHERE key = 'segmentation_move_enabled'"
+            ).fetchone()
+        return row is not None and row[0] == "true"
+    except Exception:
+        return False
+
+
+def segmentation_sweep_enabled() -> bool:
+    """True only when segmentation_sweep_enabled is explicitly 'true'. Fails closed.
+
+    Gates the nightly 3 AM sweep loop. Reads fresh from DB each call (no cache).
+    """
+    try:
+        with get_db() as db:
+            row = db.execute(
+                "SELECT value FROM settings WHERE key = 'segmentation_sweep_enabled'"
+            ).fetchone()
+        return row is not None and row[0] == "true"
+    except Exception:
+        return False
 
 
 def identity_act_enabled() -> bool:

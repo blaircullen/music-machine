@@ -20,6 +20,7 @@ const FingerprintReview = lazy(() => import('./pages/FingerprintReview'))
 const FingerprintUnmatched = lazy(() => import('./pages/FingerprintUnmatched'))
 const FingerprintHistory = lazy(() => import('./pages/FingerprintHistory'))
 const IdentityReport = lazy(() => import('./pages/IdentityReport'))
+const Segmentation = lazy(() => import('./pages/Segmentation'))
 
 function PageFallback() {
   return (
@@ -85,6 +86,7 @@ export default function App() {
                     <Route path="/fingerprint/unmatched" element={<FingerprintUnmatched />} />
                     <Route path="/fingerprint/history" element={<FingerprintHistory />} />
                     <Route path="/identity" element={<IdentityReport />} />
+                    <Route path="/segmentation" element={<Segmentation />} />
                   </Routes>
                 </Suspense>
               </main>

@@ -116,6 +116,78 @@ def _scheduled_fingerprint_loop():
             logger.error(f"Scheduled fingerprint batch failed: {e}")
 
 
+def _scheduled_live_holiday_loop():
+    """Nightly Live/Holiday segmentation sweep at 3 AM (spec §10).
+
+    Bare daemon-thread loop matching the other schedulers. Gated on segmentation_sweep_enabled;
+    skips if the 1 AM scan is running or a segmentation run is already in progress. Incremental:
+    only tracks with scanned_at > watermark, watermark advanced after each run. Dry-run records
+    candidates; auto-tier candidates are then physically moved (guarded by segmentation_move_enabled
+    inside the mover), with the §10 batch abort-on-anomaly rails. Wrapped in try/except so an
+    uncaught error can't silently kill the thread.
+    """
+    from routes.scan import scan_status
+    import segmentation_service as svc
+
+    while True:
+        now = datetime.now()
+        target = now.replace(hour=3, minute=0, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        wait_seconds = (target - now).total_seconds()
+        logger.info(
+            f"Next Live/Holiday sweep at {target.isoformat()}, sleeping {wait_seconds:.0f}s"
+        )
+        time.sleep(wait_seconds)
+
+        try:
+            from database import segmentation_sweep_enabled, get_db
+            if not segmentation_sweep_enabled():
+                logger.info("Live/Holiday sweep skipped — segmentation_sweep_enabled is false")
+                continue
+            if scan_status["running"]:
+                logger.info("Live/Holiday sweep skipped — 1 AM scan still running")
+                continue
+            if svc.run_state["running"]:
+                logger.info("Live/Holiday sweep skipped — a segmentation run is in progress")
+                continue
+
+            svc.run_state["last_heartbeat"] = datetime.now().isoformat()
+            with svc.run_lock:
+                svc.run_state.update({"running": True, "phase": "sweep", "last_error": None})
+                try:
+                    # Read watermark.
+                    with get_db() as db:
+                        wm_row = db.execute(
+                            "SELECT value FROM settings WHERE key='segmentation_last_sweep_ts'"
+                        ).fetchone()
+                    watermark = wm_row[0] if wm_row and wm_row[0] else None
+
+                    sweep_start = datetime.now().isoformat()
+                    logger.info(f"Starting Live/Holiday sweep (3 AM), watermark={watermark}")
+                    svc.run_dry_run(watermark=watermark)
+                    # Move auto-tier candidates (kill switch enforced in the mover).
+                    result = svc.apply_moves(include_auto=True, include_approved=False)
+                    logger.info(f"Live/Holiday sweep apply: {result.get('moved')} moved")
+
+                    # Advance the watermark only on a clean (non-aborted) pass.
+                    if not result.get("aborted"):
+                        with get_db() as db:
+                            db.execute(
+                                "INSERT OR REPLACE INTO settings (key, value) VALUES "
+                                "('segmentation_last_sweep_ts', ?)",
+                                (sweep_start,),
+                            )
+                    else:
+                        logger.warning(
+                            f"Sweep aborted ({result.get('abort_reason')}) — watermark NOT advanced"
+                        )
+                finally:
+                    svc.run_state.update({"running": False, "phase": "idle"})
+        except Exception as e:
+            logger.error(f"Live/Holiday sweep failed: {e}")
+
+
 def _scheduled_station_refresh_loop():
     """Refresh all sonic stations daily at 6 AM."""
     from sonic_service import refresh_all_stations
@@ -208,6 +280,19 @@ async def lifespan(app: FastAPI):
     )
     fingerprint_thread.start()
 
+    # Reconcile any interrupted segmentation moves from a prior process (spec §7).
+    try:
+        import segmentation_mover
+        segmentation_mover.reconcile_pending()
+    except Exception as e:
+        logger.warning(f"segmentation reconcile at startup failed: {e}")
+
+    # Start the nightly Live/Holiday segmentation sweep thread (3 AM)
+    segmentation_thread = threading.Thread(
+        target=_scheduled_live_holiday_loop, daemon=True, name="segmentation-scheduler"
+    )
+    segmentation_thread.start()
+
     logger.info("music-machine backend ready")
     yield
     logger.info("music-machine backend shutting down")
@@ -216,7 +301,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="music-machine", version="2.0.0", lifespan=lifespan)
 
 # Import and register all routers
-from routes import scan, dupes, upgrades, trash, stats, jobs, settings, reorg, playlists, tagger, stations, sonic, fingerprint, authenticity, identity, identity_review, dedup
+from routes import scan, dupes, upgrades, trash, stats, jobs, settings, reorg, playlists, tagger, stations, sonic, fingerprint, authenticity, identity, identity_review, dedup, segmentation
 
 app.include_router(scan.router)
 app.include_router(dupes.router)
@@ -235,6 +320,7 @@ app.include_router(fingerprint.router)
 app.include_router(authenticity.router)
 app.include_router(identity.router)
 app.include_router(identity_review.router)
+app.include_router(segmentation.router)
 
 
 @app.websocket("/ws")
