@@ -97,7 +97,13 @@ def _normalize(s: str) -> str:
 
 
 def _sanitize_search(s: str) -> str:
-    """Sanitize a string for Plex API search: fix quotes."""
+    """Sanitize a string for Plex API search: fix quotes, strip control bytes."""
+    # ID3 text frames store multiple values NULL-separated, so mutagen can hand
+    # back e.g. "The Sleeping Waltz\x00The Sleeping Waltz". A raw NUL in the
+    # search query makes Plex return HTTP 500. Take the first value and drop any
+    # remaining C0 control chars before building variants.
+    s = s.split("\x00")[0]
+    s = re.sub(r"[\x00-\x1f]", "", s)
     s = s.replace("\u2019", "'").replace("\u2018", "'")
     s = s.replace("\u201c", '"').replace("\u201d", '"')
     return s
