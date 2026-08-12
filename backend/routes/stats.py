@@ -1,5 +1,4 @@
 import logging
-import os
 
 from fastapi import APIRouter
 
@@ -41,7 +40,7 @@ def get_stats():
         ).fetchone()[0]
 
         upgrades_pending = db.execute(
-            "SELECT COUNT(*) FROM upgrade_queue WHERE status IN ('pending', 'searching', 'found', 'approved')"
+            "SELECT COUNT(*) FROM upgrade_queue WHERE status IN ('found', 'approved')"
         ).fetchone()[0]
 
         upgrade_breakdown = db.execute(
@@ -50,7 +49,7 @@ def get_stats():
                  SUM(CASE WHEN t.format NOT IN {LOSSY_FORMATS} THEN 1 ELSE 0 END) as hires_pending
                FROM upgrade_queue uq
                JOIN tracks t ON t.id = uq.track_id
-               WHERE uq.status IN ('pending', 'searching', 'found', 'approved')"""
+               WHERE uq.status IN ('found', 'approved')"""
         ).fetchone()
         lossy_upgrades_pending = upgrade_breakdown["lossy_pending"] or 0
         hires_upgrades_pending = upgrade_breakdown["hires_pending"] or 0

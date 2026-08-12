@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Library, ScrollText, ArrowUpCircle, Wand2, X, Radio, Settings, Copy, Trash2 } from 'lucide-react'
+import { LayoutDashboard, Library, ScrollText, ArrowUpCircle, Wand2, X, Radio, Settings, Copy, Trash2, Fingerprint, ShieldCheck, BadgeCheck, Layers, Split } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { getStats } from '../../lib/api'
 
@@ -15,8 +15,13 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/library', label: 'Library', icon: Library },
   { to: '/duplicates', label: 'Duplicates', icon: Copy },
+  { to: '/dedup', label: 'Dedup Review', icon: Layers },
+  { to: '/segmentation', label: 'Live & Holiday', icon: Split },
   { to: '/upgrades', label: 'Upgrades', icon: ArrowUpCircle },
   { to: '/tagger', label: 'MetaTagger', icon: Wand2 },
+  { to: '/fingerprint', label: 'Fingerprint', icon: Fingerprint },
+  { to: '/identity', label: 'Identity', icon: BadgeCheck },
+  { to: '/authenticity', label: 'Authenticity', icon: ShieldCheck },
   { to: '/stations', label: 'Stations', icon: Radio },
   { to: '/trash', label: 'Trash', icon: Trash2 },
   { to: '/jobs', label: 'Job Log', icon: ScrollText },
@@ -127,10 +132,10 @@ export function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
             />
             <span className="text-xs text-slate-500">
               {mgConnected === null
-                ? 'Checking...'
+                ? 'Checking…'
                 : mgConnected
-                ? '● Connected'
-                : '○ Disconnected'}
+                ? 'Connected'
+                : 'Disconnected'}
             </span>
           </div>
           <p className="text-[10px] text-slate-600 text-center">&copy; 2026 Shawnee Digital</p>

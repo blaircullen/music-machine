@@ -2,7 +2,9 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Query
 
 from database import get_db
 from file_manager import trash_file
@@ -77,20 +79,33 @@ def _resolve_group_internal(group_id: int, keep_track_id: int) -> int:
 
 @router.get("")
 @router.get("/")
-def list_dupes():
+def list_dupes(resolved: Optional[bool] = Query(None)):
     """
-    Return all dupe groups with full track info.
+    Return dupe groups with full track info.
+    Optional ?resolved=true/false filter. Returns all if omitted.
     Each group includes tracks sorted by quality_score desc, with is_winner flag.
     """
     with get_db() as db:
-        groups = db.execute(
-            """SELECT dg.id, dg.match_type, dg.confidence, dg.resolved, dg.kept_track_id,
-                      GROUP_CONCAT(dgm.track_id) as member_ids
-               FROM dupe_groups dg
-               JOIN dupe_group_members dgm ON dg.id = dgm.group_id
-               GROUP BY dg.id
-               ORDER BY dg.resolved ASC, dg.confidence DESC"""
-        ).fetchall()
+        if resolved is None:
+            groups = db.execute(
+                """SELECT dg.id, dg.match_type, dg.confidence, dg.resolved, dg.kept_track_id,
+                          GROUP_CONCAT(dgm.track_id) as member_ids
+                   FROM dupe_groups dg
+                   JOIN dupe_group_members dgm ON dg.id = dgm.group_id
+                   GROUP BY dg.id
+                   ORDER BY dg.resolved ASC, dg.confidence DESC"""
+            ).fetchall()
+        else:
+            groups = db.execute(
+                """SELECT dg.id, dg.match_type, dg.confidence, dg.resolved, dg.kept_track_id,
+                          GROUP_CONCAT(dgm.track_id) as member_ids
+                   FROM dupe_groups dg
+                   JOIN dupe_group_members dgm ON dg.id = dgm.group_id
+                   WHERE dg.resolved = ?
+                   GROUP BY dg.id
+                   ORDER BY dg.confidence DESC""",
+                (1 if resolved else 0,),
+            ).fetchall()
 
         result = []
         for g in groups:
@@ -127,10 +142,10 @@ def list_dupes():
 
 
 @router.post("/{group_id}/resolve")
-def resolve_dupe(group_id: int):
+def resolve_dupe(group_id: int, keep_track_id: Optional[int] = Query(None)):
     """
-    Resolve a dupe group by trashing losers. The winner is already recorded
-    in dupe_groups.kept_track_id from the analysis phase.
+    Resolve a dupe group by trashing losers. Optionally override which track to keep
+    via keep_track_id query param; otherwise uses the stored kept_track_id.
     """
     with get_db() as db:
         group = db.execute(
@@ -143,7 +158,8 @@ def resolve_dupe(group_id: int):
     if group["resolved"]:
         return {"ok": True, "moved": 0, "already_resolved": True}
 
-    moved = _resolve_group_internal(group_id, group["kept_track_id"])
+    winner_id = keep_track_id if keep_track_id is not None else group["kept_track_id"]
+    moved = _resolve_group_internal(group_id, winner_id)
     return {"ok": True, "moved": moved}
 
 

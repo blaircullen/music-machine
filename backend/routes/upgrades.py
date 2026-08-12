@@ -509,14 +509,19 @@ def _run_download_worker():
                         )
 
                 with get_db() as db:
-                    # Mark original as upgraded
+                    # Mark original as upgraded; clear its sonic features so the
+                    # new file gets freshly analyzed
                     db.execute(
                         "UPDATE tracks SET status = 'upgraded' WHERE id = ?",
                         (item_dict["track_id"],),
                     )
+                    db.execute(
+                        "DELETE FROM track_features WHERE track_id = ?",
+                        (item_dict["track_id"],),
+                    )
 
                     # Insert new FLAC track
-                    db.execute(
+                    new_track_cur = db.execute(
                         """INSERT INTO tracks
                            (file_path, file_size, format, bitrate, bit_depth, sample_rate,
                             duration, artist, album_artist, album, title, track_number,
@@ -536,6 +541,15 @@ def _run_download_worker():
                             new_meta.get("track_number") or item_dict.get("track_number"),
                             new_meta.get("disc_number") or item_dict.get("disc_number"),
                         ),
+                    )
+                    # Enqueue upgraded FLAC for sonic analysis
+                    db.execute(
+                        "INSERT OR IGNORE INTO analysis_queue (track_id) VALUES (?)",
+                        (new_track_cur.lastrowid,),
+                    )
+                    db.execute(
+                        "INSERT OR IGNORE INTO authenticity_queue (track_id) VALUES (?)",
+                        (new_track_cur.lastrowid,),
                     )
 
                     # Mark queue item complete
@@ -842,6 +856,9 @@ def retry_failed():
 @router.post("/approve-hi-res")
 def approve_hi_res_upgrades():
     """Approve only hi-res quality found items."""
+    from database import identity_act_enabled
+    if not identity_act_enabled():
+        raise HTTPException(status_code=403, detail="identity_act_enabled is false")
     with get_db() as db:
         result = db.execute(
             """UPDATE upgrade_queue
@@ -857,6 +874,9 @@ def approve_hi_res_upgrades():
 @router.post("/{item_id}/approve")
 def approve_upgrade(item_id: int):
     """Mark an upgrade queue item as approved for download."""
+    from database import identity_act_enabled
+    if not identity_act_enabled():
+        raise HTTPException(status_code=403, detail="identity_act_enabled is false")
     with get_db() as db:
         row = db.execute(
             "SELECT id, status, mg_track_id FROM upgrade_queue WHERE id = ?",
@@ -884,6 +904,9 @@ def approve_upgrade(item_id: int):
 @router.post("/approve-all")
 def approve_all_upgrades():
     """Approve all upgrade items with status='found'."""
+    from database import identity_act_enabled
+    if not identity_act_enabled():
+        raise HTTPException(status_code=403, detail="identity_act_enabled is false")
     with get_db() as db:
         result = db.execute(
             """UPDATE upgrade_queue
@@ -897,6 +920,9 @@ def approve_all_upgrades():
 @router.post("/download")
 def start_download():
     """Start downloading all approved upgrade items."""
+    from database import identity_act_enabled
+    if not identity_act_enabled():
+        raise HTTPException(status_code=403, detail="identity_act_enabled is false")
     if not _download_lock.acquire(blocking=False):
         return {"ok": False, "error": "A download is already running"}
     _download_lock.release()
@@ -928,3 +954,48 @@ def skip_upgrade(item_id: int):
             (item_id,),
         )
     return {"ok": True, "status": "skipped"}
+
+
+# ---------------------------------------------------------------------------
+# Usenet-primary lazy thaw (Part 3) — drains the frozen queue via Lidarr, not MusicGrabber.
+# ---------------------------------------------------------------------------
+
+class ThawRequest(BaseModel):
+    n: int = Field(default=10, ge=1, le=500)
+
+
+class UsenetRunRequest(BaseModel):
+    dry_run: bool = False
+    # Small-batch safety: the Lidarr queue is already deep — never fan out many album searches at
+    # once. Processing is sequential (effective concurrency 1, stricter than upgrade_concurrency=2).
+    max_albums: int = Field(default=5, ge=1, le=25)
+
+
+@router.get("/thaw-status")
+def get_thaw_status():
+    """upgrade_queue + album_upgrades counts and the upgrade_paused gate."""
+    import upgrade_thaw
+    return upgrade_thaw.thaw_status()
+
+
+@router.post("/thaw")
+def thaw_frozen(req: ThawRequest):
+    """Flip the next N frozen rows → pending (lazy; nothing thaws automatically)."""
+    import upgrade_thaw
+    flipped = upgrade_thaw.thaw_next(req.n)
+    return {"ok": True, "thawed": flipped}
+
+
+@router.post("/usenet-run")
+def usenet_run(req: UsenetRunRequest):
+    """Drain a small batch of pending rows onto the usenet path. Real runs refuse while
+    upgrade_paused=true; dry_run previews the rollup without triggering Lidarr."""
+    import upgrade_thaw
+    return upgrade_thaw.run_usenet_upgrade_batch(dry_run=req.dry_run, max_albums=req.max_albums)
+
+
+@router.post("/usenet-poll")
+def usenet_poll():
+    """Advance in-flight album_upgrades; flip placed albums' rows to 'found' for dedup review."""
+    import upgrade_thaw
+    return upgrade_thaw.poll_thawed_upgrades()

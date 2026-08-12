@@ -1,4 +1,5 @@
 import sqlite3
+import sys
 from pathlib import Path
 from contextlib import contextmanager
 import os
@@ -6,10 +7,64 @@ import os
 DB_PATH = Path(os.environ.get("DB_PATH", "/data/music-machine.db"))
 
 
+def assert_db_on_local_disk() -> None:
+    """
+    Refuse to start if the DB file lives on an NFS mount.
+
+    On Linux, parses /proc/mounts to find the mount entry whose mountpoint is
+    the longest prefix of DB_PATH's resolved path.  If the filesystem type
+    starts with 'nfs', raises RuntimeError.
+
+    No-op on macOS and other non-Linux platforms (tested locally with temp
+    files, never deployed on NFS there).
+    """
+    if sys.platform != "linux":
+        return
+
+    try:
+        resolved = DB_PATH.resolve()
+        proc_mounts = Path("/proc/mounts")
+        if not proc_mounts.exists():
+            return  # Non-standard Linux — skip check
+
+        best_mount = "/"
+        best_fstype = ""
+        for line in proc_mounts.read_text().splitlines():
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            _device, mountpoint, fstype = parts[0], parts[1], parts[2]
+            try:
+                if resolved.is_relative_to(mountpoint) and len(mountpoint) >= len(best_mount):
+                    best_mount = mountpoint
+                    best_fstype = fstype
+            except (ValueError, TypeError):
+                continue
+
+        if best_fstype.startswith("nfs"):
+            raise RuntimeError(
+                f"DB_PATH={DB_PATH} is on an NFS filesystem ({best_fstype} at "
+                f"{best_mount}).  Music Machine requires a local disk for SQLite. "
+                "Set DB_PATH to a local path and restart."
+            )
+    except RuntimeError:
+        raise
+    except Exception:
+        # Defensive: don't crash startup on parse errors
+        pass
+
+
 def init_db():
+    assert_db_on_local_disk()
     with get_db() as db:
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=NORMAL")
+
+        # Migrations that DROP tables must run before executescript so CREATE IF NOT EXISTS
+        # sees no existing table and creates the new schema.
+        # executescript() issues an implicit COMMIT, which applies the DROPs first.
+        _migrate_stations_to_sonic(db)
+
         db.executescript("""
             CREATE TABLE IF NOT EXISTS tracks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,13 +177,8 @@ def init_db():
             CREATE TABLE IF NOT EXISTS stations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
-                seed_artists TEXT NOT NULL DEFAULT '[]',
-                bpm_min INTEGER,
-                bpm_max INTEGER,
-                decade_min INTEGER,
-                decade_max INTEGER,
+                seed_track_ids TEXT NOT NULL DEFAULT '[]',
                 plex_playlist_name TEXT NOT NULL,
-                lastfm_min_listeners INTEGER NOT NULL DEFAULT 500000,
                 track_count INTEGER NOT NULL DEFAULT 0,
                 last_refreshed TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -137,14 +187,217 @@ def init_db():
             CREATE TABLE IF NOT EXISTS station_track_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 station_id INTEGER NOT NULL REFERENCES stations(id) ON DELETE CASCADE,
-                rating_key TEXT NOT NULL,
+                track_id INTEGER NOT NULL,
                 generated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS track_features (
+                track_id         INTEGER PRIMARY KEY REFERENCES tracks(id),
+                bpm              REAL,
+                key              TEXT,
+                energy           REAL,
+                danceability     REAL,
+                valence          REAL,
+                acousticness     REAL,
+                instrumentalness REAL,
+                voice_gender     TEXT,
+                mood_happy       REAL,
+                mood_sad         REAL,
+                mood_aggressive  REAL,
+                mood_relaxed     REAL,
+                genre_electronic REAL,
+                genre_rock       REAL,
+                genre_pop        REAL,
+                genre_hiphop     REAL,
+                genre_jazz       REAL,
+                feature_vector   BLOB,
+                analyzed_at      TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS track_authenticity (
+                track_id INTEGER PRIMARY KEY REFERENCES tracks(id),
+                verdict TEXT,
+                confidence REAL,
+                cutoff_hz REAL,
+                nyquist_hz REAL,
+                shelf_db REAL,
+                sharpness REAL,
+                source_guess TEXT,
+                sample_rate INTEGER,
+                spectrogram_path TEXT,
+                method_version INTEGER,
+                analyzed_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS analysis_queue (
+                track_id  INTEGER PRIMARY KEY,
+                queued_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS authenticity_queue (
+                track_id INTEGER PRIMARY KEY,
+                queued_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS station_preferences (
+                station_id        INTEGER PRIMARY KEY REFERENCES stations(id) ON DELETE CASCADE,
+                preference_vector BLOB,
+                updated_at        TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS station_blacklist (
+                station_id INTEGER NOT NULL,
+                track_id   INTEGER NOT NULL,
+                expires_at TEXT,
+                PRIMARY KEY (station_id, track_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS station_feedback (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                station_id INTEGER NOT NULL,
+                track_id   INTEGER NOT NULL,
+                signal     TEXT NOT NULL,
+                source     TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
             CREATE INDEX IF NOT EXISTS idx_station_track_history_station_id
                 ON station_track_history(station_id);
             CREATE INDEX IF NOT EXISTS idx_station_track_history_generated_at
                 ON station_track_history(generated_at);
+            CREATE INDEX IF NOT EXISTS idx_station_track_history_station_generated
+                ON station_track_history(station_id, generated_at);
+            CREATE INDEX IF NOT EXISTS idx_track_features_analyzed_at
+                ON track_features(analyzed_at);
+            CREATE INDEX IF NOT EXISTS idx_track_authenticity_verdict
+                ON track_authenticity(verdict);
+            CREATE INDEX IF NOT EXISTS idx_analysis_queue_queued_at
+                ON analysis_queue(queued_at);
+            CREATE INDEX IF NOT EXISTS idx_station_feedback_station_id
+                ON station_feedback(station_id);
+
+            -- Fingerprint verification engine tables
+            CREATE TABLE IF NOT EXISTS fingerprint_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                track_id INTEGER NOT NULL REFERENCES tracks(id),
+                chromaprint TEXT,
+                acoustid_score REAL,
+                acoustid_recording_id TEXT,
+                acoustid_release_id TEXT,
+                audd_score REAL,
+                audd_data JSON,
+                composite_confidence REAL,
+                match_source TEXT,
+                matched_artist TEXT,
+                matched_title TEXT,
+                matched_album TEXT,
+                matched_album_artist TEXT,
+                matched_year INTEGER,
+                matched_track_number INTEGER,
+                matched_disc_number INTEGER,
+                matched_genre TEXT,
+                matched_genre_raw TEXT,
+                matched_isrc TEXT,
+                matched_label TEXT,
+                matched_composer TEXT,
+                matched_cover_art_url TEXT,
+                matched_spotify_id TEXT,
+                matched_dsp_ids JSON,
+                status TEXT NOT NULL DEFAULT 'pending',
+                error_message TEXT,
+                processed_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(track_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS tag_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                track_id INTEGER NOT NULL REFERENCES tracks(id),
+                fingerprint_result_id INTEGER REFERENCES fingerprint_results(id),
+                original_artist TEXT,
+                original_title TEXT,
+                original_album TEXT,
+                original_album_artist TEXT,
+                original_year INTEGER,
+                original_track_number INTEGER,
+                original_disc_number INTEGER,
+                original_genre TEXT,
+                original_isrc TEXT,
+                original_label TEXT,
+                original_composer TEXT,
+                original_cover_art_hash TEXT,
+                original_cover_art BLOB,
+                snapshot_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS audd_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                requests INTEGER DEFAULT 0,
+                cost_cents REAL DEFAULT 0,
+                UNIQUE(date)
+            );
+
+            CREATE TABLE IF NOT EXISTS genre_map (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                raw_genre TEXT NOT NULL UNIQUE,
+                normalized_genre TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_fp_status ON fingerprint_results(status);
+            CREATE INDEX IF NOT EXISTS idx_fp_confidence ON fingerprint_results(composite_confidence);
+            CREATE INDEX IF NOT EXISTS idx_fp_track ON fingerprint_results(track_id);
+
+            -- Lease-based job locks (U9 — job_locks.py owns the logic)
+            CREATE TABLE IF NOT EXISTS job_locks (
+                job_name        TEXT PRIMARY KEY,
+                owner_id        TEXT,
+                epoch           INTEGER,
+                lease_expires_at TEXT,
+                last_heartbeat  TEXT
+            );
+
+            -- Per-recording action locks (U9 — prevents dedup/upgrade race)
+            CREATE TABLE IF NOT EXISTS recording_locks (
+                mb_recording_id TEXT PRIMARY KEY,
+                owner_id        TEXT,
+                acquired_at     TEXT
+            );
+
+            -- Identity resolution results (U4 — identity_resolver.py owns the logic)
+            -- Six states: confirmed | review | unknown | conflict | deferred | error
+            -- T3 (album lock) is reserved for Phase 2; gap in tier numbering is intentional.
+            CREATE TABLE IF NOT EXISTS track_identity (
+                track_id         INTEGER PRIMARY KEY REFERENCES tracks(id),
+                state            TEXT NOT NULL CHECK(state IN (
+                                     'confirmed','review','unknown',
+                                     'conflict','deferred','error')),
+                mb_recording_id  TEXT,
+                mb_release_id    TEXT,
+                isrc             TEXT,
+                artist           TEXT,
+                title            TEXT,
+                album            TEXT,
+                date             TEXT,
+                track_no         INTEGER,
+                tier             TEXT,
+                evidence         TEXT NOT NULL,
+                divergent        INTEGER DEFAULT 0,
+                decided_at       TEXT DEFAULT (datetime('now')),
+                resolver_version TEXT,
+                reviewed_by      TEXT,
+                reviewed_at      TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_track_identity_state
+                ON track_identity(state);
+            CREATE INDEX IF NOT EXISTS idx_track_identity_divergent
+                ON track_identity(divergent);
+            CREATE INDEX IF NOT EXISTS idx_track_identity_mb_recording_id
+                ON track_identity(mb_recording_id);
+            CREATE INDEX IF NOT EXISTS idx_track_identity_resolver_version
+                ON track_identity(resolver_version);
         """)
 
         # Insert default settings if not present
@@ -154,6 +407,22 @@ def init_db():
             ("upgrade_concurrency", "2"),
             ("upgrade_include_flac_hires", "true"),
             ("lastfm_api_key", ""),
+            ("sonic_concurrency", "2"),
+            ("auto_recue_new_imports", "false"),
+            ("auto_recue_daily_cap", "50"),
+            ("lidarr_recue_enabled", "true"),
+            ("lidarr_url", "http://10.0.0.13:8787"),
+            ("lidarr_api_key", "2cecee10715a4c1dbe8daa16226f7ed7"),
+            ("lidarr_quality_profile_id", "2"),
+            ("lossless_concurrency", "1"),
+            ("audd_api_key", "0b109e9c1fef8b670abdd86dd24d3c7d"),
+            ("audd_monthly_budget", "20"),
+            ("fp_auto_threshold", "0.95"),
+            ("fp_review_threshold", "0.50"),
+            ("fp_concurrency", "12"),
+            ("identity_act_enabled", "false"),
+            ("dedup_act_enabled", "false"),
+            ("upgrade_paused", "true"),
         ]
         for key, value in defaults:
             db.execute(
@@ -163,6 +432,33 @@ def init_db():
 
         # Migrate upgrade_queue from slskd columns to MusicGrabber columns
         _migrate_upgrade_queue(db)
+        _migrate_authenticity_queue(db)
+        _migrate_track_authenticity(db)
+        _migrate_recue_log(db)
+        _migrate_freeze_upgrade_queue(db)
+        _migrate_album_upgrades(db)
+        _migrate_dedup_actions(db)
+        _migrate_segmentation(db)
+
+        # Seed genre normalization map
+        try:
+            from genre_normalizer import seed_genre_map
+            seed_genre_map()
+        except Exception:
+            pass
+
+
+def _migrate_stations_to_sonic(db):
+    """
+    Drop old Last.fm-based stations schema and recreate with sonic engine schema.
+    Detects old schema by presence of 'seed_artists' column on the stations table.
+    """
+    cursor = db.execute("PRAGMA table_info(stations)")
+    cols = {row[1] for row in cursor.fetchall()}
+    if "seed_artists" in cols:
+        # Old schema present — drop all station-related tables so executescript recreates them
+        db.execute("DROP TABLE IF EXISTS station_track_history")
+        db.execute("DROP TABLE IF EXISTS stations")
 
 
 def _migrate_upgrade_queue(db):
@@ -179,6 +475,323 @@ def _migrate_upgrade_queue(db):
     for col, col_type in new_cols.items():
         if col not in existing_cols:
             db.execute(f"ALTER TABLE upgrade_queue ADD COLUMN {col} {col_type}")
+
+
+def _migrate_authenticity_queue(db):
+    """Add retry/backoff columns to authenticity_queue if they don't exist."""
+    cursor = db.execute("PRAGMA table_info(authenticity_queue)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+
+    new_cols = {
+        "attempts": "INTEGER DEFAULT 0",
+        "next_check_at": "TEXT",
+        "last_status": "TEXT",
+    }
+    for col, col_type in new_cols.items():
+        if col not in existing_cols:
+            db.execute(f"ALTER TABLE authenticity_queue ADD COLUMN {col} {col_type}")
+
+
+def _migrate_track_authenticity(db):
+    """Add detector detail columns to track_authenticity if they don't exist."""
+    cursor = db.execute("PRAGMA table_info(track_authenticity)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+
+    new_cols = {
+        "channels": "INTEGER",
+        "duration": "REAL",
+        "n_windows_used": "INTEGER",
+        "error": "TEXT",
+    }
+    for col, col_type in new_cols.items():
+        if col not in existing_cols:
+            db.execute(f"ALTER TABLE track_authenticity ADD COLUMN {col} {col_type}")
+
+
+def _migrate_recue_log(db):
+    """Create additive recue outcome log for auto-recue metrics."""
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS recue_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_id INTEGER,
+            source TEXT,
+            status TEXT,
+            album TEXT,
+            title TEXT,
+            recued_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    db.execute("CREATE INDEX IF NOT EXISTS idx_recue_log_status ON recue_log(status)")
+
+
+def _migrate_freeze_upgrade_queue(db):
+    """
+    Park all non-terminal upgrade_queue rows to 'frozen' status.
+
+    Runs at startup inside init_db() before any worker threads start.
+    Idempotent: guarded by 'freeze_migration_version' = '1' in settings.
+    Non-terminal statuses: pending, searching, found, approved, downloading.
+    Terminal statuses untouched: completed, failed, skipped, frozen.
+    """
+    row = db.execute(
+        "SELECT value FROM settings WHERE key = 'freeze_migration_version'"
+    ).fetchone()
+    if row and row[0] == "1":
+        return  # Already applied
+
+    db.execute(
+        """UPDATE upgrade_queue
+           SET status = 'frozen', updated_at = CURRENT_TIMESTAMP
+           WHERE status NOT IN ('completed', 'failed', 'skipped', 'frozen')"""
+    )
+    db.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('freeze_migration_version', '1')"
+    )
+
+
+def _migrate_album_upgrades(db):
+    """
+    Album-level upgrade requests (usenet-primary, via Lidarr). Separate from the per-track
+    upgrade_queue (which stays MusicGrabber-shaped). Keyed UNIQUE(artist, album) so a request
+    is upserted, not duplicated. Idempotent: CREATE TABLE IF NOT EXISTS.
+    """
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS album_upgrades (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            artist          TEXT NOT NULL,
+            album           TEXT NOT NULL,
+            lidarr_album_id INTEGER,
+            status          TEXT NOT NULL DEFAULT 'pending',
+            attempts        INTEGER NOT NULL DEFAULT 0,
+            reason          TEXT,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(artist, album)
+        )
+        """
+    )
+
+
+def _migrate_dedup_actions(db):
+    """
+    U7 dedup audit log. One row per inferior copy trashed by the identity-gated dedup pass
+    (dedup_pass.py). Reversible: file_txn journals the move; this row records keep/trash linkage
+    and the pre-trash sha so a restore can be verified. Idempotent: CREATE TABLE IF NOT EXISTS.
+    """
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dedup_actions (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            keep_id        INTEGER,
+            trashed_id     INTEGER,
+            match_type     TEXT,
+            confidence     REAL,
+            sha_before     TEXT,
+            created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            rolled_back    INTEGER DEFAULT 0,
+            rolled_back_at TIMESTAMP
+        )
+        """
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_dedup_actions_trashed ON dedup_actions(trashed_id)"
+    )
+
+
+def _migrate_segmentation(db):
+    """
+    Live & Holiday library-split segmentation schema (docs/live-holiday-split-spec.md §3).
+
+    Adds three additive tables (review queue, move ledger, playlist snapshot), an additive
+    `tracks.move_status` claim column (PRAGMA-guarded — never recreate `tracks`), and two
+    fail-closed kill-switch settings seeded 'false'. Idempotent: CREATE TABLE IF NOT EXISTS +
+    ADD COLUMN only when absent. Wired into init_db() (an unwired _migrate_* silently never
+    runs — this repo's documented #1 gotcha).
+    """
+    db.executescript(
+        """
+        -- Review queue: ambiguous / non-auto matches await explicit approval.
+        CREATE TABLE IF NOT EXISTS segmentation_candidates (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_id          INTEGER REFERENCES tracks(id),
+            source_path       TEXT,
+            dest_path         TEXT,
+            target_library    TEXT,        -- 'live' | 'holiday'
+            matched_field     TEXT,        -- 'title' | 'album' | 'genre'
+            matched_pattern   TEXT,        -- the rule/marker that fired
+            confidence_tier   TEXT,        -- 'auto' | 'review'
+            confidence_reason TEXT,        -- human-readable why
+            detected_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            status            TEXT DEFAULT 'proposed'
+                              -- 'proposed' | 'approved' | 'rejected' | 'moved'
+        );
+
+        -- Move ledger (append-only, reversible).
+        CREATE TABLE IF NOT EXISTS segmentation_moves (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_id          INTEGER,
+            source_path       TEXT,
+            dest_path         TEXT,
+            target_library    TEXT,        -- 'live' | 'holiday'
+            matched_pattern   TEXT,
+            confidence_tier   TEXT,        -- 'auto' | 'reviewed'
+            old_rating_key    TEXT,        -- Plex ratingKey in section 5 before move
+            new_rating_key    TEXT,        -- Plex ratingKey in target section after rescan
+            sha_before        TEXT,
+            sha_after         TEXT,
+            run_id            TEXT,        -- groups a sweep/bulk run (for whole-run undo)
+            state             TEXT DEFAULT 'pending',   -- 'pending' | 'done'
+            moved_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            rolled_back       INTEGER DEFAULT 0,
+            rolled_back_at    TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_segmoves_run ON segmentation_moves(run_id);
+        CREATE INDEX IF NOT EXISTS idx_segmoves_track ON segmentation_moves(track_id);
+
+        -- Playlist membership snapshot, captured before a run's moves.
+        CREATE TABLE IF NOT EXISTS segmentation_playlist_snapshot (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id              TEXT,
+            playlist_rating_key TEXT,
+            playlist_title      TEXT,
+            track_id            INTEGER,
+            old_rating_key      TEXT,
+            file_path           TEXT,      -- match key used to re-resolve after move
+            repaired            INTEGER DEFAULT 0,   -- 1 = re-added post-move
+            repair_error        TEXT,
+            snapshot_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_segsnap_run ON segmentation_playlist_snapshot(run_id);
+        """
+    )
+
+    # Additive optimistic move-claim column on tracks (never recreate tracks).
+    cursor = db.execute("PRAGMA table_info(tracks)")
+    track_cols = {row[1] for row in cursor.fetchall()}
+    if "move_status" not in track_cols:
+        db.execute("ALTER TABLE tracks ADD COLUMN move_status TEXT")  # NULL | 'claiming' | 'moving'
+
+    # Fail-closed kill-switch settings, seeded 'false'.
+    for key in ("segmentation_move_enabled", "segmentation_sweep_enabled"):
+        db.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES (?, 'false')",
+            (key,),
+        )
+
+
+def segmentation_move_enabled() -> bool:
+    """True only when segmentation_move_enabled is explicitly 'true'. Fails closed.
+
+    Gates any physical auto-move. Reads fresh from DB each call (no cache).
+    """
+    try:
+        with get_db() as db:
+            row = db.execute(
+                "SELECT value FROM settings WHERE key = 'segmentation_move_enabled'"
+            ).fetchone()
+        return row is not None and row[0] == "true"
+    except Exception:
+        return False
+
+
+def segmentation_sweep_enabled() -> bool:
+    """True only when segmentation_sweep_enabled is explicitly 'true'. Fails closed.
+
+    Gates the nightly 3 AM sweep loop. Reads fresh from DB each call (no cache).
+    """
+    try:
+        with get_db() as db:
+            row = db.execute(
+                "SELECT value FROM settings WHERE key = 'segmentation_sweep_enabled'"
+            ).fetchone()
+        return row is not None and row[0] == "true"
+    except Exception:
+        return False
+
+
+def identity_act_enabled() -> bool:
+    """Return True only when the identity_act_enabled setting is explicitly 'true'.
+
+    Reads fresh from DB on every call (no module-level cache).
+    Fails closed: any error or unexpected value returns False.
+    """
+    try:
+        with get_db() as db:
+            row = db.execute(
+                "SELECT value FROM settings WHERE key = 'identity_act_enabled'"
+            ).fetchone()
+        return row is not None and row[0] == "true"
+    except Exception:
+        return False
+
+
+def dedup_act_enabled() -> bool:
+    """Return True only when dedup_act_enabled is explicitly 'true'.
+
+    Dedicated U7-dedup gate, layered ON TOP OF identity_act_enabled — auto-trash requires
+    BOTH true (file_txn.move_chokepoint independently enforces identity_act_enabled). Reads
+    fresh each call; fails closed to False.
+    """
+    try:
+        with get_db() as db:
+            row = db.execute(
+                "SELECT value FROM settings WHERE key = 'dedup_act_enabled'"
+            ).fetchone()
+        return row is not None and row[0] == "true"
+    except Exception:
+        return False
+
+
+def upgrade_paused() -> bool:
+    """Return True (paused) UNLESS upgrade_paused is explicitly 'false'.
+
+    Inverse-polarity safety gate for the thawed upgrade runner: a missing row, any error, or
+    any value other than 'false' means PAUSED. The runner refuses to act while paused. Reads
+    fresh each call (no cache).
+    """
+    try:
+        with get_db() as db:
+            row = db.execute(
+                "SELECT value FROM settings WHERE key = 'upgrade_paused'"
+            ).fetchone()
+        # Default-paused: only the explicit string 'false' un-pauses.
+        return row is None or row[0] != "false"
+    except Exception:
+        return True
+
+
+def log_recue(
+    conn_or_path: sqlite3.Connection | str | Path,
+    track_id: int,
+    source: str,
+    status: str,
+    album: str | None,
+    title: str | None,
+) -> None:
+    """Append one recue metric row using an existing connection or DB path."""
+    should_close = not isinstance(conn_or_path, sqlite3.Connection)
+    conn = (
+        sqlite3.connect(str(conn_or_path), check_same_thread=False, timeout=30)
+        if should_close
+        else conn_or_path
+    )
+    try:
+        _migrate_recue_log(conn)
+        conn.execute(
+            """
+            INSERT INTO recue_log (track_id, source, status, album, title)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (track_id, source, status, album or "", title or ""),
+        )
+        if should_close:
+            conn.commit()
+    finally:
+        if should_close:
+            conn.close()
 
 
 @contextmanager

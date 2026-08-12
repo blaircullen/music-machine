@@ -11,7 +11,16 @@ const Tagger = lazy(() => import('./pages/Tagger'))
 const Stations = lazy(() => import('./pages/Stations'))
 const Settings = lazy(() => import('./pages/Settings'))
 const Duplicates = lazy(() => import('./pages/Duplicates'))
+const Dedup = lazy(() => import('./pages/Dedup'))
 const Trash = lazy(() => import('./pages/Trash'))
+const Player = lazy(() => import('./pages/Player'))
+const Authenticity = lazy(() => import('./pages/Authenticity'))
+const FingerprintDashboard = lazy(() => import('./pages/Fingerprint'))
+const FingerprintReview = lazy(() => import('./pages/FingerprintReview'))
+const FingerprintUnmatched = lazy(() => import('./pages/FingerprintUnmatched'))
+const FingerprintHistory = lazy(() => import('./pages/FingerprintHistory'))
+const IdentityReport = lazy(() => import('./pages/IdentityReport'))
+const Segmentation = lazy(() => import('./pages/Segmentation'))
 
 function PageFallback() {
   return (
@@ -26,39 +35,65 @@ export default function App() {
 
   return (
     <BrowserRouter>
-      <div className="min-h-screen flex">
-        <Sidebar mobileOpen={mobileNavOpen} onMobileClose={() => setMobileNavOpen(false)} />
+      <Routes>
+        {/* Full-screen player — no sidebar, no shell chrome */}
+        <Route
+          path="/listen/:stationId"
+          element={
+            <Suspense fallback={<PageFallback />}>
+              <Player />
+            </Suspense>
+          }
+        />
 
-        {/* Mobile header */}
-        <div className="fixed top-0 left-0 right-0 h-14 bg-[#13151f] border-b border-[#2a2d3a] flex items-center px-4 z-30 lg:hidden">
-          <button
-            onClick={() => setMobileNavOpen(true)}
-            aria-label="Open navigation"
-            className="p-2 text-slate-400 hover:text-white rounded-lg transition-colors"
-          >
-            <Menu className="w-5 h-5" />
-          </button>
-          <span className="ml-3 text-sm font-bold text-white font-[family-name:var(--font-family-display)]">
-            Music Machine
-          </span>
-        </div>
+        {/* All other routes share the sidebar shell */}
+        <Route
+          path="/*"
+          element={
+            <div className="min-h-screen flex">
+              <Sidebar mobileOpen={mobileNavOpen} onMobileClose={() => setMobileNavOpen(false)} />
 
-        <main className="lg:ml-[220px] flex-1 p-4 pt-18 lg:p-8 lg:pt-8 min-h-screen min-w-0 overflow-x-hidden">
-          <Suspense fallback={<PageFallback />}>
-            <Routes>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/library" element={<Library />} />
-              <Route path="/jobs" element={<JobLog />} />
-              <Route path="/upgrades" element={<Upgrades />} />
-              <Route path="/tagger" element={<Tagger />} />
-              <Route path="/stations" element={<Stations />} />
-              <Route path="/settings" element={<Settings />} />
-              <Route path="/duplicates" element={<Duplicates />} />
-              <Route path="/trash" element={<Trash />} />
-            </Routes>
-          </Suspense>
-        </main>
-      </div>
+              {/* Mobile header */}
+              <div className="fixed top-0 left-0 right-0 h-14 bg-[#13151f] border-b border-[#2a2d3a] flex items-center px-4 z-30 lg:hidden">
+                <button
+                  onClick={() => setMobileNavOpen(true)}
+                  aria-label="Open navigation"
+                  className="p-2 text-slate-400 hover:text-white rounded-lg transition-colors"
+                >
+                  <Menu className="w-5 h-5" />
+                </button>
+                <span className="ml-3 text-sm font-bold text-white font-[family-name:var(--font-family-display)]">
+                  Music Machine
+                </span>
+              </div>
+
+              <main className="lg:ml-[220px] flex-1 p-4 pt-18 lg:p-8 lg:pt-8 min-h-screen min-w-0 overflow-x-hidden">
+                <Suspense fallback={<PageFallback />}>
+                  <Routes>
+                    <Route path="/" element={<Dashboard />} />
+                    <Route path="/library" element={<Library />} />
+                    <Route path="/jobs" element={<JobLog />} />
+                    <Route path="/upgrades" element={<Upgrades />} />
+                    <Route path="/tagger" element={<Tagger />} />
+                    <Route path="/stations" element={<Stations />} />
+                    <Route path="/settings" element={<Settings />} />
+                    <Route path="/duplicates" element={<Duplicates />} />
+                    <Route path="/dedup" element={<Dedup />} />
+                    <Route path="/trash" element={<Trash />} />
+                    <Route path="/authenticity" element={<Authenticity />} />
+                    <Route path="/fingerprint" element={<FingerprintDashboard />} />
+                    <Route path="/fingerprint/review" element={<FingerprintReview />} />
+                    <Route path="/fingerprint/unmatched" element={<FingerprintUnmatched />} />
+                    <Route path="/fingerprint/history" element={<FingerprintHistory />} />
+                    <Route path="/identity" element={<IdentityReport />} />
+                    <Route path="/segmentation" element={<Segmentation />} />
+                  </Routes>
+                </Suspense>
+              </main>
+            </div>
+          }
+        />
+      </Routes>
     </BrowserRouter>
   )
 }

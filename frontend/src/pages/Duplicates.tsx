@@ -14,20 +14,16 @@ interface Track {
   artist: string
   title: string
   album: string
-}
-
-interface DupeGroup {
-  id: number
-  match_type: string
-  confidence: number
-  resolved: number
-  kept_track_id: number
-  member_ids: string
+  quality_score: number
+  is_winner: boolean
 }
 
 interface DupeResult {
-  group: DupeGroup
-  members: Track[]
+  id: number
+  match_type: string
+  confidence: number
+  resolved: boolean
+  tracks: Track[]
 }
 
 type SortKey = 'confidence' | 'quality_gap' | 'artist'
@@ -46,24 +42,12 @@ function formatSampleRate(rate: number): string {
   return rate >= 1000 ? `${(rate / 1000).toFixed(1)} kHz` : `${rate} Hz`
 }
 
-function getQualityScore(track: Track): number {
-  const formatScores: Record<string, number> = {
-    flac: 100, alac: 95, wav: 90, aiff: 90,
-    aac: 60, ogg: 55, mp3: 50, wma: 40,
-  }
-  const base = formatScores[track.format.toLowerCase()] ?? 30
-  const bitrateBonus = track.bitrate > 0 ? Math.min(track.bitrate / 3200, 10) : 0
-  const depthBonus = track.bit_depth > 16 ? (track.bit_depth - 16) * 2 : 0
-  const sampleBonus = track.sample_rate > 44100 ? ((track.sample_rate - 44100) / 44100) * 5 : 0
-  return base + bitrateBonus + depthBonus + sampleBonus
+function getWinner(tracks: Track[]): Track {
+  return tracks.find(t => t.is_winner) ?? tracks[0]
 }
 
-function getWinner(members: Track[]): Track {
-  return members.reduce((best, t) => getQualityScore(t) > getQualityScore(best) ? t : best, members[0])
-}
-
-function getQualityGap(members: Track[]): number {
-  const scores = members.map(getQualityScore)
+function getQualityGap(tracks: Track[]): number {
+  const scores = tracks.map(t => t.quality_score)
   return Math.round(Math.max(...scores) - Math.min(...scores))
 }
 
@@ -123,13 +107,13 @@ export default function Duplicates() {
     }
   }
 
-  const handleResolve = async (groupId: number, keepTrackId: number, members: Track[]) => {
-    const winner = members.find(t => t.id === keepTrackId)
+  const handleResolve = async (groupId: number, keepTrackId: number, tracks: Track[]) => {
+    const winner = tracks.find(t => t.id === keepTrackId)
     setResolving(prev => new Set(prev).add(groupId))
     try {
       const res = await fetch(`/api/dupes/${groupId}/resolve?keep_track_id=${keepTrackId}`, { method: 'POST' })
       if (!res.ok) throw new Error(await res.text())
-      setDupes(prev => prev.filter(d => d.group.id !== groupId))
+      setDupes(prev => prev.filter(d => d.id !== groupId))
       if (expandedId === groupId) setExpandedId(null)
       toast.success(`Resolved: ${winner?.artist} - ${winner?.title} (kept ${winner?.format.toUpperCase()})`)
     } catch {
@@ -157,9 +141,9 @@ export default function Duplicates() {
   const sorted = [...dupes].sort((a, b) => {
     let cmp = 0
     switch (sortKey) {
-      case 'confidence': cmp = a.group.confidence - b.group.confidence; break
-      case 'quality_gap': cmp = getQualityGap(a.members) - getQualityGap(b.members); break
-      case 'artist': cmp = (a.members[0]?.artist ?? '').localeCompare(b.members[0]?.artist ?? ''); break
+      case 'confidence': cmp = a.confidence - b.confidence; break
+      case 'quality_gap': cmp = getQualityGap(a.tracks) - getQualityGap(b.tracks); break
+      case 'artist': cmp = (a.tracks[0]?.artist ?? '').localeCompare(b.tracks[0]?.artist ?? ''); break
     }
     return sortDir === 'asc' ? cmp : -cmp
   })
@@ -171,7 +155,7 @@ export default function Duplicates() {
 
   const sortIndicator = (key: SortKey) => sortKey === key ? (sortDir === 'asc' ? ' \u25B2' : ' \u25BC') : ''
 
-  const unresolvedCount = dupes.filter(d => !d.group.resolved).length
+  const unresolvedCount = dupes.filter(d => !d.resolved).length
 
   const tabs: { key: FilterTab; label: string }[] = [
     { key: 'all', label: 'All' },
@@ -257,24 +241,23 @@ export default function Duplicates() {
             </thead>
             <tbody>
               <AnimatePresence>
-                {sorted.map(({ group, members }) => {
-                  const winner = getWinner(members)
-                  const isExpanded = expandedId === group.id
-                  const isResolving = resolving.has(group.id)
-                  const rep = members[0]
-                  const gap = getQualityGap(members)
+                {sorted.map((dupe) => {
+                  const winner = getWinner(dupe.tracks)
+                  const isExpanded = expandedId === dupe.id
+                  const isResolving = resolving.has(dupe.id)
+                  const rep = dupe.tracks[0]
+                  const gap = getQualityGap(dupe.tracks)
                   return (
                     <GroupRows
-                      key={group.id}
-                      group={group}
-                      members={members}
+                      key={dupe.id}
+                      dupe={dupe}
                       winner={winner}
                       rep={rep}
                       gap={gap}
                       isExpanded={isExpanded}
                       isResolving={isResolving}
-                      onToggle={() => setExpandedId(isExpanded ? null : group.id)}
-                      onResolve={(keepId) => handleResolve(group.id, keepId, members)}
+                      onToggle={() => setExpandedId(isExpanded ? null : dupe.id)}
+                      onResolve={(keepId) => handleResolve(dupe.id, keepId, dupe.tracks)}
                     />
                   )
                 })}
@@ -288,9 +271,9 @@ export default function Duplicates() {
 }
 
 function GroupRows({
-  group, members, winner, rep, gap, isExpanded, isResolving, onToggle, onResolve,
+  dupe, winner, rep, gap, isExpanded, isResolving, onToggle, onResolve,
 }: {
-  group: DupeGroup; members: Track[]; winner: Track; rep: Track; gap: number
+  dupe: DupeResult; winner: Track; rep: Track; gap: number
   isExpanded: boolean; isResolving: boolean; onToggle: () => void; onResolve: (keepId: number) => void
 }) {
   return (
@@ -310,19 +293,19 @@ function GroupRows({
         <td className="px-4 py-4 text-base-300">{rep?.title ?? '-'}</td>
         <td className="px-4 py-4 text-base-400 group-hover:text-base-300 transition-colors">{rep?.album ?? '-'}</td>
         <td className="px-4 py-4 text-center">
-          <span className="bg-base-700/60 px-2 py-1 rounded-md text-base-300">{members.length}</span>
+          <span className="bg-base-700/60 px-2 py-1 rounded-md text-base-300">{dupe.tracks.length}</span>
         </td>
         <td className="px-4 py-4 text-center">
           <span className={gap > 20 ? 'text-amber-400 font-bold drop-shadow-[0_0_8px_rgba(245,158,11,0.4)]' : 'text-base-400'}>{gap}</span>
         </td>
         <td className="px-4 py-4 text-center">
-          <Badge>{group.match_type}</Badge>
+          <Badge>{dupe.match_type}</Badge>
         </td>
         <td className="px-4 py-4 text-center text-base-300">
-          {group.confidence > 0 ? `${(group.confidence * 100).toFixed(0)}%` : '-'}
+          {dupe.confidence > 0 ? `${(dupe.confidence * 100).toFixed(0)}%` : '-'}
         </td>
         <td className="px-4 py-4 text-right" onClick={e => e.stopPropagation()}>
-          {!group.resolved ? (
+          {!dupe.resolved ? (
             <Button
               size="sm"
               variant="primary"
@@ -356,12 +339,12 @@ function GroupRows({
                       <th scope="col" className="px-3 py-3 font-medium uppercase tracking-wider">Sample Rate</th>
                       <th scope="col" className="px-3 py-3 font-medium uppercase tracking-wider">Size</th>
                       <th scope="col" className="px-3 py-3 font-medium uppercase tracking-wider">File Path</th>
-                      {!group.resolved && <th scope="col" className="px-3 py-3 font-medium text-right uppercase tracking-wider">Action</th>}
+                      {!dupe.resolved && <th scope="col" className="px-3 py-3 font-medium text-right uppercase tracking-wider">Action</th>}
                     </tr>
                   </thead>
                   <tbody>
-                    {members.map(track => {
-                      const isWinner = track.id === winner.id
+                    {dupe.tracks.map(track => {
+                      const isWinner = track.is_winner
                       return (
                         <tr
                           key={track.id}
@@ -382,7 +365,7 @@ function GroupRows({
                           <td className="px-3 py-2 font-mono">{formatSampleRate(track.sample_rate)}</td>
                           <td className="px-3 py-2 font-mono">{formatBytes(track.file_size)}</td>
                           <td className="px-3 py-2 font-mono text-base-500 max-w-xs truncate" title={track.file_path}>{track.file_path}</td>
-                          {!group.resolved && (
+                          {!dupe.resolved && (
                             <td className="px-3 py-2 text-right">
                               {!isWinner && (
                                 <Button size="sm" variant="ghost" onClick={() => onResolve(track.id)}>Keep This</Button>

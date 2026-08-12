@@ -10,3 +10,4 @@ trash/
 .pytest_cache/
 slskd/
 data/
+.venv/

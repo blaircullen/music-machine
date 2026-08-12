@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -17,7 +18,7 @@ from typing import Iterator
 import musicbrainzngs
 from mutagen import File as MutagenFile
 from mutagen.flac import FLAC, Picture
-from mutagen.id3 import APIC, TALB, TDRC, TIT2, TPE1, TRCK, TXXX
+from mutagen.id3 import APIC, TALB, TCOM, TCON, TDRC, TIT2, TPE1, TPUB, TRCK, TSRC, TXXX
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4, MP4Cover
 
@@ -26,10 +27,15 @@ from scanner import AUDIO_EXTENSIONS
 logger = logging.getLogger(__name__)
 
 ACOUSTID_API_KEY = os.environ.get("ACOUSTID_API_KEY", "Yx40zTgSFD")
+# Candidates at or above this score participate in tier decisions.
 ACOUSTID_MIN_SCORE = 0.5
+# Candidates down to this score are retained in the returned list (with
+# below_floor=True) so that veto logic can evaluate the full candidate set.
+ACOUSTID_RETAIN_SCORE = 0.3
 
 # Set a descriptive user-agent per MusicBrainz API requirements
 musicbrainzngs.set_useragent("MusicMachine-MetaTagger", "1.0", "https://github.com/blaircullen/music-machine")
+socket.setdefaulttimeout(30)  # Prevent musicbrainzngs from hanging indefinitely
 
 
 # ---------------------------------------------------------------------------
@@ -40,7 +46,13 @@ musicbrainzngs.set_useragent("MusicMachine-MetaTagger", "1.0", "https://github.c
 def lookup_acoustid(fingerprint: str, duration: float) -> list[dict]:
     """
     Query AcoustID API for matching MusicBrainz recording IDs.
-    Returns list of {recording_id, score} sorted by score descending.
+
+    Returns list of {recording_id, score, below_floor} sorted by score
+    descending, where below_floor=True when score < ACOUSTID_MIN_SCORE (0.5).
+    Candidates below ACOUSTID_RETAIN_SCORE (0.3) are dropped entirely.
+
+    Callers that only want tier-eligible candidates should filter to
+    below_floor=False.  Veto logic must evaluate the full returned set.
     """
     import urllib.request
     import urllib.parse
@@ -65,7 +77,7 @@ def lookup_acoustid(fingerprint: str, duration: float) -> list[dict]:
     results = []
     for result in data.get("results", []):
         score = result.get("score", 0)
-        if score < ACOUSTID_MIN_SCORE:
+        if score < ACOUSTID_RETAIN_SCORE:
             continue
         for recording in result.get("recordings", []):
             rec_id = recording.get("id")
@@ -78,7 +90,14 @@ def lookup_acoustid(fingerprint: str, duration: float) -> list[dict]:
         rid = r["recording_id"]
         if rid not in seen or r["score"] > seen[rid]["score"]:
             seen[rid] = r
-    return sorted(seen.values(), key=lambda x: x["score"], reverse=True)
+
+    sorted_results = sorted(seen.values(), key=lambda x: x["score"], reverse=True)
+
+    # Annotate with below_floor flag
+    for r in sorted_results:
+        r["below_floor"] = r["score"] < ACOUSTID_MIN_SCORE
+
+    return sorted_results
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +279,10 @@ def write_metadata(
     Write metadata tags to an audio file using mutagen.
     Returns (sha256_before, sha256_after).
     """
+    from database import identity_act_enabled
+    if not identity_act_enabled():
+        raise ValueError("identity_act_enabled is false")
+
     sha256_before = _compute_sha256(file_path)
 
     audio = MutagenFile(file_path)
@@ -296,6 +319,14 @@ def _write_flac(audio: FLAC, meta: dict, art: bytes | None, rec_id: str | None,
         if meta.get("total_tracks"):
             tn += f"/{meta['total_tracks']}"
         audio["tracknumber"] = [tn]
+    if meta.get("genre"):
+        audio["genre"] = [meta["genre"]]
+    if meta.get("composer"):
+        audio["composer"] = [meta["composer"]]
+    if meta.get("isrc"):
+        audio["isrc"] = [meta["isrc"]]
+    if meta.get("label"):
+        audio["label"] = [meta["label"]]
     if rec_id:
         audio["musicbrainz_recordingid"] = [rec_id]
 
@@ -327,6 +358,14 @@ def _write_mp3(audio: MP3, file_path: str, meta: dict, art: bytes | None, rec_id
         if meta.get("total_tracks"):
             tn += f"/{meta['total_tracks']}"
         tags["TRCK"] = TRCK(encoding=3, text=[tn])
+    if meta.get("genre"):
+        tags["TCON"] = TCON(encoding=3, text=[meta["genre"]])
+    if meta.get("composer"):
+        tags["TCOM"] = TCOM(encoding=3, text=[meta["composer"]])
+    if meta.get("isrc"):
+        tags["TSRC"] = TSRC(encoding=3, text=[meta["isrc"]])
+    if meta.get("label"):
+        tags["TPUB"] = TPUB(encoding=3, text=[meta["label"]])
     if rec_id:
         tags["TXXX:MusicBrainz Recording Id"] = TXXX(
             encoding=3, desc="MusicBrainz Recording Id", text=[rec_id]
@@ -354,6 +393,14 @@ def _write_mp4(audio: MP4, meta: dict, art: bytes | None, rec_id: str | None,
     if meta.get("track_number"):
         total = meta.get("total_tracks") or 0
         audio.tags["trkn"] = [(meta["track_number"], total)]
+    if meta.get("genre"):
+        audio.tags["\xa9gen"] = [meta["genre"]]
+    if meta.get("composer"):
+        audio.tags["\xa9wrt"] = [meta["composer"]]
+    if meta.get("isrc"):
+        audio.tags["----:com.apple.iTunes:ISRC"] = [meta["isrc"].encode("utf-8")]
+    if meta.get("label"):
+        audio.tags["----:com.apple.iTunes:LABEL"] = [meta["label"].encode("utf-8")]
     if rec_id:
         audio.tags["----:com.apple.iTunes:MusicBrainz Recording Id"] = [
             rec_id.encode("utf-8")
@@ -379,6 +426,14 @@ def _write_vorbis(audio, meta: dict, rec_id: str | None):
         if meta.get("total_tracks"):
             tn += f"/{meta['total_tracks']}"
         audio["tracknumber"] = [tn]
+    if meta.get("genre"):
+        audio["genre"] = [meta["genre"]]
+    if meta.get("composer"):
+        audio["composer"] = [meta["composer"]]
+    if meta.get("isrc"):
+        audio["isrc"] = [meta["isrc"]]
+    if meta.get("label"):
+        audio["label"] = [meta["label"]]
     if rec_id:
         audio["musicbrainz_recordingid"] = [rec_id]
 
@@ -593,7 +648,7 @@ def tag_directory(
 
             yield {"type": "result", "result": result}
 
-            # Rate limit: 1 req/sec between files (MusicBrainz courtesy)
+            # Rate limit: 3 req/sec (AcoustID limit; MB lookups are local now)
             # Skip sleep for files that didn't hit external APIs
             if result["status"] not in ("skipped",):
-                time.sleep(1.0)
+                time.sleep(0.34)

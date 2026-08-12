@@ -15,6 +15,14 @@ ALLOWED_KEYS = {
     "upgrade_scan_limit",
     "upgrade_concurrency",
     "lastfm_api_key",
+    "auto_recue_new_imports",
+    "auto_recue_daily_cap",
+    "lidarr_recue_enabled",
+    "lidarr_url",
+    "lidarr_api_key",
+    "lidarr_quality_profile_id",
+    "dedup_act_enabled",
+    "upgrade_paused",
 }
 
 # Read-only environment-derived values surfaced in GET response
@@ -30,6 +38,14 @@ DEFAULTS = {
     "upgrade_scan_limit": "0",
     "upgrade_concurrency": "8",
     "lastfm_api_key": "",
+    "auto_recue_new_imports": "0",
+    "auto_recue_daily_cap": "50",
+    "lidarr_recue_enabled": "true",
+    "lidarr_url": "http://10.0.0.13:8787",
+    "lidarr_api_key": "2cecee10715a4c1dbe8daa16226f7ed7",
+    "lidarr_quality_profile_id": "2",
+    "dedup_act_enabled": "false",
+    "upgrade_paused": "true",
 }
 
 

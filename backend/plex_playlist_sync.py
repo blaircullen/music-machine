@@ -281,30 +281,9 @@ def search_plex_track(artist: str, title: str) -> Optional[str]:
     if best_key and best_score > 0:
         return best_key
 
-    # Last resort: title-only search with cleaned title, accept any artist
-    # Catches compilations filed under "Various Artists"
-    for search_title in unique_variants:
-        norm_title = _normalize(search_title)
-        for query in _search_variants(search_title):
-            try:
-                resp = _plex_get(f"/library/sections/{MUSIC_SECTION_ID}/all", {
-                    "type": "10",
-                    "title": query,
-                })
-                data = resp.json()
-                tracks = data.get("MediaContainer", {}).get("Metadata", [])
-            except Exception:
-                continue
-            for track in tracks:
-                t_title = _normalize(track.get("title", ""))
-                if t_title == norm_title:
-                    logger.info(
-                        f"Fuzzy match (title-only): '{artist} - {title}' → "
-                        f"'{track.get('grandparentTitle', '?')} - {track.get('title', '?')}' "
-                        f"[{track['ratingKey']}]"
-                    )
-                    return track["ratingKey"]
-
+    # Title-only fallback intentionally removed — it caused wrong-artist tracks
+    # (e.g. Ella Henderson covers) to be picked when the correct track wasn't in
+    # the library. Better to leave the entry unmatched than silently use the wrong artist.
     return None
 
 

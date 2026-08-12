@@ -18,6 +18,27 @@ from mutagen import File as MutagenFile
 
 logger = logging.getLogger(__name__)
 
+
+def _repair_albumartist(filepath: str, correct_artist: str) -> bool:
+    """
+    Write albumartist tag to a file if it is missing or set to a Various Artists value.
+    Returns True if tag was written, False if already correct or write failed.
+    """
+    try:
+        audio = MutagenFile(filepath, easy=True)
+        if audio is None:
+            return False
+        current = (audio.get("albumartist") or [""])[0].strip() if audio.get("albumartist") else ""
+        if current and current.lower() not in VA_NAMES:
+            return False  # already set to a real artist
+        audio["albumartist"] = [correct_artist]
+        audio.save()
+        logger.info(f"Repaired albumartist: {os.path.basename(filepath)!r}: {current!r} → {correct_artist!r}")
+        return True
+    except Exception as e:
+        logger.warning(f"albumartist repair failed for {filepath}: {e}")
+        return False
+
 MUSIC_ROOT = os.environ.get("MUSIC_ROOT", "/music/FLAC")
 _raw_inbox = os.environ.get("INBOX_DIRS", "/music/MP3s,/music/iTunes,/music/Singles")
 INBOX_DIRS = [d.strip() for d in _raw_inbox.split(",") if d.strip()]
@@ -119,6 +140,13 @@ def _process_file(src: str, stats: dict, emptied_dirs: set, dry_run: bool):
         stats["skipped"] += 1
         logger.info(f"Skip (no tags): {src}")
         return
+
+    # Repair missing/VA albumartist before computing dest — prevents Plex artist mismatches
+    artist = (tags.get("artist") or "").strip()
+    current_aa = (tags.get("albumartist") or "").strip()
+    if artist and (not current_aa or current_aa.lower() in VA_NAMES) and not dry_run:
+        if _repair_albumartist(src, artist):
+            tags["albumartist"] = artist  # reflect in tags used for dest path
 
     dest = build_dest_path(tags, src)
     if dest is None:

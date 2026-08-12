@@ -1,7 +1,9 @@
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import { Button } from './Button'
+
+const FOCUSABLE = 'button, input, select, textarea, a[href], [tabindex]:not([tabindex="-1"])'
 
 interface ModalProps {
   open: boolean
@@ -24,11 +26,41 @@ export function Modal({
   onConfirm,
   children,
 }: ModalProps) {
-  // Close on Escape
+  const panelRef = useRef<HTMLDivElement>(null)
+  const previousFocusRef = useRef<HTMLElement | null>(null)
+
+  // Restore focus on close, capture trigger on open
+  useEffect(() => {
+    if (open) {
+      previousFocusRef.current = document.activeElement as HTMLElement
+      // Move focus to first focusable element in the modal
+      requestAnimationFrame(() => {
+        const first = panelRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE)[0]
+        first?.focus()
+      })
+    } else {
+      previousFocusRef.current?.focus()
+      previousFocusRef.current = null
+    }
+  }, [open])
+
+  // Close on Escape + focus trap
   useEffect(() => {
     if (!open) return
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+    function handler(e: KeyboardEvent) {
+      if (e.key === 'Escape') { onClose(); return }
+      if (e.key !== 'Tab') return
+      const panel = panelRef.current
+      if (!panel) return
+      const focusable = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE))
+      if (focusable.length === 0) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (e.shiftKey) {
+        if (document.activeElement === first) { e.preventDefault(); last.focus() }
+      } else {
+        if (document.activeElement === last) { e.preventDefault(); first.focus() }
+      }
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
@@ -45,7 +77,7 @@ export function Modal({
         onClick={onClose}
       />
       {/* Panel */}
-      <div className="relative w-full max-w-md rounded-xl bg-[#1a1d27] border border-[#2a2d3a] shadow-2xl p-6">
+      <div ref={panelRef} className="relative w-full max-w-md rounded-xl bg-[#1a1d27] border border-[#2a2d3a] shadow-2xl p-6">
         <div className="flex items-start justify-between mb-4">
           <h3 id="modal-title" className="text-base font-semibold text-white">{title}</h3>
           <button

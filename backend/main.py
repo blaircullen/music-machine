@@ -50,7 +50,7 @@ def _scheduled_scan_loop():
 
 
 def _scheduled_playlist_sync_loop():
-    """Sync M3U playlists to Plex daily at 2 AM."""
+    """Sync M3U playlists to Plex daily at 2 AM, then run Plex feedback poll."""
     from routes.playlists import _run_sync
 
     while True:
@@ -64,6 +64,11 @@ def _scheduled_playlist_sync_loop():
         )
         time.sleep(wait_seconds)
 
+        from database import identity_act_enabled
+        if not identity_act_enabled():
+            logger.info("Scheduled playlist sync skipped — identity_act_enabled is false")
+            continue
+
         logger.info("Starting scheduled playlist sync (2 AM daily)")
         try:
             _run_sync()
@@ -71,10 +76,121 @@ def _scheduled_playlist_sync_loop():
         except Exception as e:
             logger.error(f"Scheduled playlist sync failed: {e}")
 
+        logger.info("Starting nightly Plex feedback poll")
+        try:
+            from feedback_service import run_nightly_plex_feedback
+            run_nightly_plex_feedback()
+        except Exception as e:
+            logger.error(f"Plex feedback poll failed: {e}")
+
+
+def _scheduled_fingerprint_loop():
+    """Run fingerprint verification for new tracks daily at 4 AM."""
+    from fingerprint_engine import run_incremental, fp_status
+
+    while True:
+        now = datetime.now()
+        target = now.replace(hour=4, minute=0, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        wait_seconds = (target - now).total_seconds()
+        logger.info(
+            f"Next fingerprint batch at {target.isoformat()}, sleeping {wait_seconds:.0f}s"
+        )
+        time.sleep(wait_seconds)
+
+        from database import identity_act_enabled
+        if not identity_act_enabled():
+            logger.info("Scheduled fingerprint batch skipped — identity_act_enabled is false")
+            continue
+
+        if fp_status["running"]:
+            logger.info("Fingerprint batch skipped — already in progress")
+            continue
+
+        logger.info("Starting scheduled fingerprint batch (4 AM daily)")
+        try:
+            run_incremental()
+            logger.info("Scheduled fingerprint batch complete")
+        except Exception as e:
+            logger.error(f"Scheduled fingerprint batch failed: {e}")
+
+
+def _scheduled_live_holiday_loop():
+    """Nightly Live/Holiday segmentation sweep at 3 AM (spec §10).
+
+    Bare daemon-thread loop matching the other schedulers. Gated on segmentation_sweep_enabled;
+    skips if the 1 AM scan is running or a segmentation run is already in progress. Incremental:
+    only tracks with scanned_at > watermark, watermark advanced after each run. Dry-run records
+    candidates; auto-tier candidates are then physically moved (guarded by segmentation_move_enabled
+    inside the mover), with the §10 batch abort-on-anomaly rails. Wrapped in try/except so an
+    uncaught error can't silently kill the thread.
+    """
+    from routes.scan import scan_status
+    import segmentation_service as svc
+
+    while True:
+        now = datetime.now()
+        target = now.replace(hour=3, minute=0, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        wait_seconds = (target - now).total_seconds()
+        logger.info(
+            f"Next Live/Holiday sweep at {target.isoformat()}, sleeping {wait_seconds:.0f}s"
+        )
+        time.sleep(wait_seconds)
+
+        try:
+            from database import segmentation_sweep_enabled, get_db
+            if not segmentation_sweep_enabled():
+                logger.info("Live/Holiday sweep skipped — segmentation_sweep_enabled is false")
+                continue
+            if scan_status["running"]:
+                logger.info("Live/Holiday sweep skipped — 1 AM scan still running")
+                continue
+            if svc.run_state["running"]:
+                logger.info("Live/Holiday sweep skipped — a segmentation run is in progress")
+                continue
+
+            svc.run_state["last_heartbeat"] = datetime.now().isoformat()
+            with svc.run_lock:
+                svc.run_state.update({"running": True, "phase": "sweep", "last_error": None})
+                try:
+                    # Read watermark.
+                    with get_db() as db:
+                        wm_row = db.execute(
+                            "SELECT value FROM settings WHERE key='segmentation_last_sweep_ts'"
+                        ).fetchone()
+                    watermark = wm_row[0] if wm_row and wm_row[0] else None
+
+                    sweep_start = datetime.now().isoformat()
+                    logger.info(f"Starting Live/Holiday sweep (3 AM), watermark={watermark}")
+                    svc.run_dry_run(watermark=watermark)
+                    # Move auto-tier candidates (kill switch enforced in the mover).
+                    result = svc.apply_moves(include_auto=True, include_approved=False)
+                    logger.info(f"Live/Holiday sweep apply: {result.get('moved')} moved")
+
+                    # Advance the watermark only on a clean (non-aborted) pass.
+                    if not result.get("aborted"):
+                        with get_db() as db:
+                            db.execute(
+                                "INSERT OR REPLACE INTO settings (key, value) VALUES "
+                                "('segmentation_last_sweep_ts', ?)",
+                                (sweep_start,),
+                            )
+                    else:
+                        logger.warning(
+                            f"Sweep aborted ({result.get('abort_reason')}) — watermark NOT advanced"
+                        )
+                finally:
+                    svc.run_state.update({"running": False, "phase": "idle"})
+        except Exception as e:
+            logger.error(f"Live/Holiday sweep failed: {e}")
+
 
 def _scheduled_station_refresh_loop():
-    """Refresh all Pandora stations daily at 6 AM."""
-    from stations_service import refresh_all_stations
+    """Refresh all sonic stations daily at 6 AM."""
+    from sonic_service import refresh_all_stations
 
     while True:
         now = datetime.now()
@@ -110,18 +226,23 @@ async def lifespan(app: FastAPI):
             )
             if cur.rowcount:
                 logger.info(f"Cleaned up {cur.rowcount} orphaned running job(s)")
-                # Reset any tracks left in mid-flight states by the crashed job.
-                # 'searching' rows that already have mg_track_id set completed their
-                # search before the crash — promote them to 'found' rather than losing the result.
-                db.execute(
-                    "UPDATE upgrade_queue SET status='found' "
-                    "WHERE status='searching' AND mg_track_id IS NOT NULL"
+            # Always reset mid-flight upgrade queue items — these get stuck if the
+            # process is killed while a search/download is in progress.
+            # 'searching' rows with mg_track_id already have a result — promote to 'found'.
+            found_cur = db.execute(
+                "UPDATE upgrade_queue SET status='found' "
+                "WHERE status='searching' AND mg_track_id IS NOT NULL"
+            )
+            pending_cur = db.execute(
+                "UPDATE upgrade_queue SET status='pending' "
+                "WHERE status IN ('searching', 'downloading')"
+            )
+            if found_cur.rowcount or pending_cur.rowcount:
+                logger.info(
+                    f"Reset stuck upgrade_queue items: "
+                    f"{found_cur.rowcount} → found, {pending_cur.rowcount} → pending"
                 )
-                db.execute(
-                    "UPDATE upgrade_queue SET status='pending' "
-                    "WHERE status IN ('searching', 'downloading')"
-                )
-                db.commit()
+            db.commit()
     except Exception as e:
         logger.warning(f"Failed to clean up orphaned jobs: {e}")
 
@@ -129,10 +250,11 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_event_loop()
 
     # Inject event loop reference into route modules that need it
-    from routes import scan as scan_mod, upgrades as upgrades_mod, tagger as tagger_mod
+    from routes import scan as scan_mod, upgrades as upgrades_mod, tagger as tagger_mod, fingerprint as fp_mod
     scan_mod.set_event_loop(loop)
     upgrades_mod.set_event_loop(loop)
     tagger_mod.set_event_loop(loop)
+    fp_mod.set_event_loop(loop)
 
     # Start the daily scheduled scan thread
     scheduler_thread = threading.Thread(
@@ -152,6 +274,25 @@ async def lifespan(app: FastAPI):
     )
     station_refresh_thread.start()
 
+    # Start the daily fingerprint batch thread (4 AM)
+    fingerprint_thread = threading.Thread(
+        target=_scheduled_fingerprint_loop, daemon=True, name="fingerprint-scheduler"
+    )
+    fingerprint_thread.start()
+
+    # Reconcile any interrupted segmentation moves from a prior process (spec §7).
+    try:
+        import segmentation_mover
+        segmentation_mover.reconcile_pending()
+    except Exception as e:
+        logger.warning(f"segmentation reconcile at startup failed: {e}")
+
+    # Start the nightly Live/Holiday segmentation sweep thread (3 AM)
+    segmentation_thread = threading.Thread(
+        target=_scheduled_live_holiday_loop, daemon=True, name="segmentation-scheduler"
+    )
+    segmentation_thread.start()
+
     logger.info("music-machine backend ready")
     yield
     logger.info("music-machine backend shutting down")
@@ -160,11 +301,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="music-machine", version="2.0.0", lifespan=lifespan)
 
 # Import and register all routers
-from routes import scan, dupes, upgrades, trash, stats, jobs, settings, reorg, playlists, tagger, stations
+from routes import scan, dupes, upgrades, trash, stats, jobs, settings, reorg, playlists, tagger, stations, sonic, fingerprint, authenticity, identity, identity_review, dedup, segmentation
 
 app.include_router(scan.router)
 app.include_router(dupes.router)
 app.include_router(upgrades.router)
+app.include_router(dedup.router)
 app.include_router(trash.router)
 app.include_router(stats.router)
 app.include_router(jobs.router)
@@ -173,6 +315,12 @@ app.include_router(reorg.router)
 app.include_router(playlists.router)
 app.include_router(tagger.router)
 app.include_router(stations.router)
+app.include_router(sonic.router)
+app.include_router(fingerprint.router)
+app.include_router(authenticity.router)
+app.include_router(identity.router)
+app.include_router(identity_review.router)
+app.include_router(segmentation.router)
 
 
 @app.websocket("/ws")
