@@ -29,6 +29,20 @@ logger = logging.getLogger(__name__)
 
 AIR_CHECK_SKIP = "Unknown Artist/Unknown Album"
 
+# AcoustID score collision guard (2026-08-12): a single acoustic fingerprint
+# frequently maps to MULTIPLE recordings (compilations/covers/collisions —
+# see feedback_audd_authoritative_tag_corruption.md, the 2026-06-14 mass
+# mis-tag of 2,468 tracks). If the top candidate does not clearly beat the
+# runner-up, blindly trusting tier_matches[0] repeats that bug. Any
+# candidates within this margin of the best score are treated as tied and
+# routed through the disambiguator instead of auto-trusted.
+AMBIGUITY_SCORE_MARGIN = 0.02
+MAX_DISAMBIGUATION_CANDIDATES = 3
+
+# Below this similarity ratio, two artist strings are treated as genuinely
+# different artists (not a formatting/feat./diacritic variant).
+ARTIST_SIMILARITY_FLOOR = 0.6
+
 # Hard cap on concurrency — DB setting cannot exceed this
 MAX_PHASE_A_WORKERS = 3
 MAX_PHASE_B_WORKERS = 3
@@ -450,9 +464,48 @@ def _process_track(track: dict, dry_run: bool, dir_lock: dict | None) -> dict:
 
         best_score = tier_matches[0]["score"]
 
-        # Step 3: Get metadata from local MusicBrainz mirror (or public API)
-        recording_id = tier_matches[0]["recording_id"]
-        metadata = _get_mb_metadata(recording_id)
+        # Step 3: Get metadata from local MusicBrainz mirror (or public API).
+        # A fingerprint score tie is NOT proof of identity — see
+        # AMBIGUITY_SCORE_MARGIN above. When the top candidates are within
+        # margin of each other, fetch metadata for each and let the
+        # disambiguator (release-type priority + existing-tag similarity)
+        # pick, instead of trusting whichever happened to sort first.
+        close_candidates = [
+            m for m in tier_matches[:MAX_DISAMBIGUATION_CANDIDATES]
+            if (best_score - m["score"]) <= AMBIGUITY_SCORE_MARGIN
+        ]
+        ambiguous = len(close_candidates) > 1
+
+        existing_tags = {
+            "artist": track.get("artist"),
+            "title": track.get("title"),
+            "album": track.get("album"),
+        }
+
+        if not ambiguous:
+            recording_id = tier_matches[0]["recording_id"]
+            metadata = _get_mb_metadata(recording_id)
+        else:
+            candidate_meta = []
+            for m in close_candidates:
+                md = _get_mb_metadata(m["recording_id"])
+                if md:
+                    md["_recording_id"] = m["recording_id"]
+                    candidate_meta.append(md)
+            if not candidate_meta:
+                metadata = None
+            else:
+                metadata = select_best_release(
+                    candidate_meta, existing_tags=existing_tags, dir_lock=dir_lock
+                )
+            if metadata:
+                recording_id = metadata.get("_recording_id", close_candidates[0]["recording_id"])
+                logger.info(
+                    f"Track {track_id}: AcoustID score collision — "
+                    f"{len(candidate_meta)} candidates within "
+                    f"{AMBIGUITY_SCORE_MARGIN} of top score {best_score}; "
+                    f"disambiguator chose {metadata.get('artist')!r} / {metadata.get('title')!r}"
+                )
 
         if not metadata:
             _update_fp_status(fp_result_id, "unmatched", error="MusicBrainz lookup failed")
@@ -476,6 +529,25 @@ def _process_track(track: dict, dry_run: bool, dir_lock: dict | None) -> dict:
         # Step 7: Determine action based on confidence
         auto_threshold = _get_setting("fp_auto_threshold", 0.95)
         review_threshold = _get_setting("fp_review_threshold", 0.50)
+
+        # Cross-validate against the file's EXISTING tags before allowing an
+        # auto-write. A same-fingerprint match to a DIFFERENT artist is
+        # exactly the failure mode that corrupted ~2,468 tracks on
+        # 2026-06-14 (feedback_audd_authoritative_tag_corruption.md rule #1:
+        # "a reattribution to a different artist is high-stakes — requires
+        # human review"). An unresolved score collision (ambiguous=True)
+        # gets the same treatment: it means the disambiguator had to guess
+        # among genuinely tied candidates, not that one is well.
+        existing_artist = (track.get("artist") or "").strip()
+        new_artist = (metadata.get("artist") or "").strip()
+        artist_changed = bool(existing_artist) and _artist_differs(existing_artist, new_artist)
+        force_review = ambiguous or artist_changed
+        if force_review:
+            logger.info(
+                f"Track {track_id}: forcing human review "
+                f"(ambiguous={ambiguous}, artist_changed={artist_changed}: "
+                f"{existing_artist!r} -> {new_artist!r}), confidence={confidence}"
+            )
 
         # Store the match result
         with get_db() as db:
@@ -509,7 +581,7 @@ def _process_track(track: dict, dry_run: bool, dir_lock: dict | None) -> dict:
 
         _fp_inc("matched")
 
-        if confidence >= auto_threshold:
+        if confidence >= auto_threshold and not force_review:
             if dry_run:
                 _update_fp_status(fp_result_id, "auto_approved")
             else:
@@ -525,7 +597,7 @@ def _process_track(track: dict, dry_run: bool, dir_lock: dict | None) -> dict:
                 "release_group_id": metadata.get("release_group_id"),
             }
 
-        elif confidence >= review_threshold:
+        elif confidence >= review_threshold or force_review:
             _update_fp_status(fp_result_id, "flagged")
             _fp_inc("flagged")
             return {
@@ -613,6 +685,25 @@ def _compute_confidence(acoustid_score: float, metadata: dict) -> float:
     return round(min(1.0, max(0.0, confidence)), 4)
 
 
+def _artist_differs(existing: str, new: str) -> bool:
+    """True when two artist strings look like genuinely different artists —
+    not just a case/diacritic/"feat."/"The"-prefix formatting difference.
+    Used to gate auto-write on an artist reattribution (see call site)."""
+    import unicodedata
+    from difflib import SequenceMatcher
+
+    def _norm(s: str) -> str:
+        s = unicodedata.normalize("NFKD", s).lower().strip()
+        return "".join(c for c in s if c.isalnum() or c.isspace())
+
+    a, b = _norm(existing), _norm(new)
+    if not a or not b or a == b:
+        return False
+    if a in b or b in a:
+        return False
+    return SequenceMatcher(None, a, b).ratio() < ARTIST_SIMILARITY_FLOOR
+
+
 def _auto_fix_track(
     track_id: int,
     file_path: str,
@@ -644,6 +735,13 @@ def _auto_fix_track(
     if art_result:
         art_bytes, art_mime = art_result
 
+    # Write EVERY MB-sourced field in one pass — a partial rewrite (title/
+    # artist/album updated but genre/label/composer/isrc silently left on
+    # the OLD identity's values) is its own corruption bug independent of
+    # match confidence: a correct single-source retag must update all
+    # MB-sourced fields together or none. mutagen's audio.save() below is
+    # the single commit point, so setting every field first makes this
+    # atomic in practice.
     tag_data = {
         "artist": metadata.get("artist"),
         "title": metadata.get("title"),
@@ -651,6 +749,10 @@ def _auto_fix_track(
         "date": str(metadata.get("date") or metadata.get("year", ""))[:4] or None,
         "track_number": metadata.get("track_number"),
         "total_tracks": metadata.get("total_tracks"),
+        "genre": genre,
+        "isrc": metadata.get("isrc"),
+        "label": metadata.get("label"),
+        "composer": metadata.get("composer"),
     }
 
     try:
