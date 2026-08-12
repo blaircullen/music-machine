@@ -23,6 +23,8 @@ from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4, MP4Cover
 
 from scanner import AUDIO_EXTENSIONS
+from disambiguator import resolve_match_candidates, text_differs
+from tag_backup import _read_all_tags
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,12 @@ ACOUSTID_MIN_SCORE = 0.5
 # Candidates down to this score are retained in the returned list (with
 # below_floor=True) so that veto logic can evaluate the full candidate set.
 ACOUSTID_RETAIN_SCORE = 0.3
+
+# Same collision-detection knobs as fingerprint_engine.py (see that module
+# for the 2026-06-14 mass mis-tag rationale) — this legacy pipeline shares
+# the same AcoustID top-pick blind spot and needs the same guard.
+AMBIGUITY_SCORE_MARGIN = 0.02
+MAX_DISAMBIGUATION_CANDIDATES = 3
 
 # Set a descriptive user-agent per MusicBrainz API requirements
 musicbrainzngs.set_useragent("MusicMachine-MetaTagger", "1.0", "https://github.com/blaircullen/music-machine")
@@ -531,15 +539,59 @@ def tag_file(file_path: str, force: bool = False, dry_run: bool = False,
         result["error_msg"] = "No AcoustID match"
         return result
 
-    result["acoustid_score"] = matches[0]["score"]
-    recording_id = matches[0]["recording_id"]
-    result["mb_recording_id"] = recording_id
+    # Filter to tier-eligible candidates — same floor fingerprint_engine.py
+    # applies (below_floor candidates are retained by lookup_acoustid only
+    # for veto logic, not for driving a match).
+    tier_matches = [m for m in matches if not m.get("below_floor", False)]
+    if not tier_matches:
+        result["status"] = "failed"
+        result["error_msg"] = "No AcoustID match above floor"
+        return result
 
-    # Step 3: MusicBrainz metadata
-    metadata = lookup_musicbrainz(recording_id)
+    # Step 2b: read the file's EXISTING tags before touching anything, both
+    # as a disambiguation hint and to gate auto-write on a reattribution.
+    existing_tags = {}
+    try:
+        audio_for_tags = MutagenFile(file_path)
+        if audio_for_tags is not None:
+            existing_tags = _read_all_tags(audio_for_tags)
+    except Exception as e:
+        logger.debug(f"Could not read existing tags for {file_path}: {e}")
+
+    # Step 3: MusicBrainz metadata. A fingerprint score tie is NOT proof of
+    # identity (see fingerprint_engine.AMBIGUITY_SCORE_MARGIN) — when the
+    # top AcoustID candidates are within margin of each other, this legacy
+    # path previously took tier_matches[0] blindly, which is exactly the
+    # top-pick collision bug the fingerprint engine's fix eliminated.
+    # Route through the same disambiguator here.
+    metadata, recording_id, ambiguous = resolve_match_candidates(
+        tier_matches, lookup_musicbrainz, existing_tags=existing_tags, dir_lock=locked_release,
+        score_margin=AMBIGUITY_SCORE_MARGIN, max_candidates=MAX_DISAMBIGUATION_CANDIDATES,
+    )
     if not metadata:
         result["status"] = "failed"
         result["error_msg"] = "MusicBrainz lookup failed"
+        return result
+
+    result["acoustid_score"] = tier_matches[0]["score"]
+    result["mb_recording_id"] = recording_id
+
+    # A same-fingerprint match to a DIFFERENT artist than what's already on
+    # the file is high-stakes reattribution — requires human review, same
+    # as the fingerprint engine's force_review gate. An unresolved score
+    # collision (ambiguous=True) gets the same treatment.
+    existing_artist = (existing_tags.get("artist") or "").strip()
+    new_artist = (metadata.get("artist") or "").strip()
+    artist_changed = bool(existing_artist) and text_differs(existing_artist, new_artist)
+    if ambiguous or artist_changed:
+        result["status"] = "failed"
+        result["error_msg"] = (
+            f"Needs review: ambiguous={ambiguous}, artist_changed={artist_changed} "
+            f"({existing_artist!r} -> {new_artist!r}) — not auto-tagged"
+        )
+        result["matched_artist"] = metadata.get("artist", "")
+        result["matched_title"] = metadata.get("title", "")
+        result["matched_album"] = metadata.get("album", "")
         return result
 
     result["matched_artist"] = metadata.get("artist", "")

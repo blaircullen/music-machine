@@ -181,6 +181,9 @@ def approve_result(result_id: int):
         "release_group_id": None,
         "release_id": row["acoustid_release_id"],
         "cover_art_url": row["matched_cover_art_url"],
+        "isrc": row["matched_isrc"],
+        "label": row["matched_label"],
+        "composer": row["matched_composer"],
     }
 
     _auto_fix_track(

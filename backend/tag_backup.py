@@ -96,6 +96,9 @@ def rollback_tags(snapshot_id: int) -> bool:
             "track_number": row["original_track_number"],
             "disc_number": row["original_disc_number"],
             "genre": row["original_genre"],
+            "isrc": row["original_isrc"],
+            "label": row["original_label"],
+            "composer": row["original_composer"],
         }
 
         from tagger import write_metadata

@@ -23,7 +23,7 @@ from tag_backup import snapshot_tags
 from audd_client import identify_track as audd_identify, check_budget as audd_check_budget
 from genre_normalizer import normalize_genre
 from cover_art import fetch_cover_art
-from disambiguator import select_best_release, build_dir_lock
+from disambiguator import build_dir_lock, resolve_match_candidates, text_differs
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +39,8 @@ AIR_CHECK_SKIP = "Unknown Artist/Unknown Album"
 AMBIGUITY_SCORE_MARGIN = 0.02
 MAX_DISAMBIGUATION_CANDIDATES = 3
 
-# Below this similarity ratio, two artist strings are treated as genuinely
-# different artists (not a formatting/feat./diacritic variant).
-ARTIST_SIMILARITY_FLOOR = 0.6
+# Artist/title mismatch floor lives in disambiguator.TEXT_SIMILARITY_FLOOR
+# (shared with tagger.py's legacy tag_file() path).
 
 # Hard cap on concurrency — DB setting cannot exceed this
 MAX_PHASE_A_WORKERS = 3
@@ -470,42 +469,21 @@ def _process_track(track: dict, dry_run: bool, dir_lock: dict | None) -> dict:
         # margin of each other, fetch metadata for each and let the
         # disambiguator (release-type priority + existing-tag similarity)
         # pick, instead of trusting whichever happened to sort first.
-        close_candidates = [
-            m for m in tier_matches[:MAX_DISAMBIGUATION_CANDIDATES]
-            if (best_score - m["score"]) <= AMBIGUITY_SCORE_MARGIN
-        ]
-        ambiguous = len(close_candidates) > 1
-
         existing_tags = {
             "artist": track.get("artist"),
             "title": track.get("title"),
             "album": track.get("album"),
         }
 
-        if not ambiguous:
-            recording_id = tier_matches[0]["recording_id"]
-            metadata = _get_mb_metadata(recording_id)
-        else:
-            candidate_meta = []
-            for m in close_candidates:
-                md = _get_mb_metadata(m["recording_id"])
-                if md:
-                    md["_recording_id"] = m["recording_id"]
-                    candidate_meta.append(md)
-            if not candidate_meta:
-                metadata = None
-            else:
-                metadata = select_best_release(
-                    candidate_meta, existing_tags=existing_tags, dir_lock=dir_lock
-                )
-            if metadata:
-                recording_id = metadata.get("_recording_id", close_candidates[0]["recording_id"])
-                logger.info(
-                    f"Track {track_id}: AcoustID score collision — "
-                    f"{len(candidate_meta)} candidates within "
-                    f"{AMBIGUITY_SCORE_MARGIN} of top score {best_score}; "
-                    f"disambiguator chose {metadata.get('artist')!r} / {metadata.get('title')!r}"
-                )
+        metadata, recording_id, ambiguous = resolve_match_candidates(
+            tier_matches, _get_mb_metadata, existing_tags=existing_tags, dir_lock=dir_lock,
+            score_margin=AMBIGUITY_SCORE_MARGIN, max_candidates=MAX_DISAMBIGUATION_CANDIDATES,
+        )
+        if ambiguous and metadata:
+            logger.info(
+                f"Track {track_id}: AcoustID score collision — "
+                f"disambiguator chose {metadata.get('artist')!r} / {metadata.get('title')!r}"
+            )
 
         if not metadata:
             _update_fp_status(fp_result_id, "unmatched", error="MusicBrainz lookup failed")
@@ -538,15 +516,28 @@ def _process_track(track: dict, dry_run: bool, dir_lock: dict | None) -> dict:
         # human review"). An unresolved score collision (ambiguous=True)
         # gets the same treatment: it means the disambiguator had to guess
         # among genuinely tied candidates, not that one is well.
+        #
+        # A same-artist match to a genuinely different RECORDING (two songs
+        # both titled differently, or two same-artist tracks that share a
+        # fingerprint — e.g. two songs both titled "Intro") is the same
+        # failure mode at the title level, so it gets the same gate. Scoped
+        # to title only — album/track-number mismatches are lower-stakes
+        # and reviewed separately (see P2 backlog).
         existing_artist = (track.get("artist") or "").strip()
         new_artist = (metadata.get("artist") or "").strip()
-        artist_changed = bool(existing_artist) and _artist_differs(existing_artist, new_artist)
-        force_review = ambiguous or artist_changed
+        artist_changed = bool(existing_artist) and text_differs(existing_artist, new_artist)
+
+        existing_title = (track.get("title") or "").strip()
+        new_title = (metadata.get("title") or "").strip()
+        title_changed = bool(existing_title) and text_differs(existing_title, new_title)
+
+        force_review = ambiguous or artist_changed or title_changed
         if force_review:
             logger.info(
                 f"Track {track_id}: forcing human review "
                 f"(ambiguous={ambiguous}, artist_changed={artist_changed}: "
-                f"{existing_artist!r} -> {new_artist!r}), confidence={confidence}"
+                f"{existing_artist!r} -> {new_artist!r}, title_changed={title_changed}: "
+                f"{existing_title!r} -> {new_title!r}), confidence={confidence}"
             )
 
         # Store the match result
@@ -683,25 +674,6 @@ def _compute_confidence(acoustid_score: float, metadata: dict) -> float:
 
     confidence = (acoustid_score * 0.7) + (completeness * 0.2) + (clarity * 0.1)
     return round(min(1.0, max(0.0, confidence)), 4)
-
-
-def _artist_differs(existing: str, new: str) -> bool:
-    """True when two artist strings look like genuinely different artists —
-    not just a case/diacritic/"feat."/"The"-prefix formatting difference.
-    Used to gate auto-write on an artist reattribution (see call site)."""
-    import unicodedata
-    from difflib import SequenceMatcher
-
-    def _norm(s: str) -> str:
-        s = unicodedata.normalize("NFKD", s).lower().strip()
-        return "".join(c for c in s if c.isalnum() or c.isspace())
-
-    a, b = _norm(existing), _norm(new)
-    if not a or not b or a == b:
-        return False
-    if a in b or b in a:
-        return False
-    return SequenceMatcher(None, a, b).ratio() < ARTIST_SIMILARITY_FLOOR
 
 
 def _auto_fix_track(
